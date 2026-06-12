@@ -4,5 +4,7 @@
 2. Then double-click `open-ai-canvas.cmd`.
 3. Open `http://localhost:5420/ai-canvas-agent` if the browser does not open automatically.
 4. Click the top API status button in the canvas and enter your own API key.
+   - Image generation / Agent: enter the OpenAI-compatible image gateway key.
+   - Video generation: enter the Volcengine Ark API key for Doubao Seedance 2.0.
 
 Do not commit or share `apps/examples/.env.local` unless you intentionally want to share that local API key.

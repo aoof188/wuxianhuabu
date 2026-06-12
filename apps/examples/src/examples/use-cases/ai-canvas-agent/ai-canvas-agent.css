@@ -1309,6 +1309,13 @@
 	padding: 12px;
 }
 
+.tap-node--video {
+	display: grid;
+	grid-template-rows: auto 150px auto auto auto auto auto auto;
+	gap: 9px;
+	padding: 12px;
+}
+
 .tap-node__header {
 	display: flex;
 	align-items: center;
@@ -1675,6 +1682,16 @@
 	background: #3c2a25;
 }
 
+.tap-node__workflow-presets .tap-node__workflow-video {
+	border-color: rgba(101, 169, 255, 0.38);
+	background: linear-gradient(180deg, #213047 0%, #27282c 100%);
+}
+
+.tap-node__workflow-presets .tap-node__workflow-video:hover {
+	border-color: rgba(101, 169, 255, 0.72);
+	background: #263853;
+}
+
 .tap-node__workflow-presets strong {
 	font-size: 12px;
 	font-weight: 900;
@@ -1765,6 +1782,207 @@
 	border-color: #ff6847;
 	color: #ff6847;
 	box-shadow: 0 0 0 5px rgba(255, 104, 71, 0.14);
+}
+
+.tap-video-frame {
+	position: relative;
+	display: grid;
+	place-items: center;
+	min-height: 150px;
+	overflow: hidden;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 8px;
+	background: #101114;
+}
+
+.tap-video-frame video {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+	background: #050607;
+}
+
+.tap-video-placeholder {
+	display: grid;
+	place-items: center;
+	gap: 6px;
+	width: 100%;
+	height: 100%;
+	color: #d8dce3;
+	text-align: center;
+}
+
+.tap-video-placeholder svg {
+	color: #ff6847;
+}
+
+.tap-video-placeholder strong {
+	font-size: 13px;
+	font-weight: 950;
+}
+
+.tap-video-placeholder span {
+	color: #8f96a3;
+	font-size: 11px;
+	font-weight: 800;
+}
+
+.tap-video-sources {
+	display: flex;
+	gap: 7px;
+	min-height: 44px;
+	overflow-x: auto;
+}
+
+.tap-video-sources figure {
+	display: grid;
+	grid-template-columns: 38px minmax(0, 1fr);
+	align-items: center;
+	gap: 7px;
+	min-width: 118px;
+	margin: 0;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 7px;
+	background: #24262a;
+	padding: 5px;
+}
+
+.tap-video-sources img {
+	width: 38px;
+	height: 32px;
+	border-radius: 5px;
+	object-fit: cover;
+}
+
+.tap-video-sources figcaption {
+	overflow: hidden;
+	color: #c7ccd6;
+	font-size: 10px;
+	font-weight: 800;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tap-video-field {
+	display: grid;
+	gap: 5px;
+	min-width: 0;
+}
+
+.tap-video-field span {
+	color: #a8afbc;
+	font-size: 11px;
+	font-weight: 850;
+}
+
+.tap-video-field input,
+.tap-video-field select,
+.tap-video-field textarea {
+	width: 100%;
+	border: 1px solid rgba(255, 255, 255, 0.13);
+	border-radius: 7px;
+	background: #101114;
+	color: #f5f7fb;
+	font: inherit;
+	font-size: 12px;
+	font-weight: 760;
+	padding: 8px;
+}
+
+.tap-video-field textarea {
+	height: 76px;
+	min-height: 76px;
+	max-height: 76px;
+	line-height: 1.4;
+	resize: none;
+	user-select: text;
+}
+
+.tap-video-field input:focus,
+.tap-video-field select:focus,
+.tap-video-field textarea:focus {
+	border-color: rgba(255, 104, 71, 0.7);
+	outline: none;
+}
+
+.tap-video-ratio-group {
+	display: grid;
+	grid-template-columns: repeat(7, 1fr);
+	gap: 5px;
+}
+
+.tap-video-ratio-group button {
+	height: 30px;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 6px;
+	background: #282a2f;
+	color: #d8dce3;
+	font: inherit;
+	font-size: 11px;
+	font-weight: 850;
+	cursor: pointer;
+}
+
+.tap-video-ratio-group button[data-selected="true"] {
+	border-color: rgba(255, 104, 71, 0.75);
+	background: #3b211d;
+	color: #ffd3c8;
+}
+
+.tap-video-options {
+	display: grid;
+	grid-template-columns: 1fr 82px 1fr;
+	gap: 7px;
+}
+
+.tap-video-toggle-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 24px;
+	color: #c7ccd6;
+	font-size: 11px;
+	font-weight: 850;
+}
+
+.tap-video-toggle-row label {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.tap-video-toggle-row small {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	color: #777f8d;
+	text-align: right;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tap-video-actions {
+	display: grid;
+	grid-template-columns: 1fr 96px;
+	gap: 8px;
+}
+
+.tap-video-actions > button:not(.tap-generate-button) {
+	height: 40px;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 8px;
+	background: #282a2f;
+	color: #f5f7fb;
+	font: inherit;
+	font-size: 12px;
+	font-weight: 900;
+	cursor: pointer;
+}
+
+.tap-video-actions > button:disabled {
+	cursor: not-allowed;
+	opacity: 0.48;
 }
 
 .tap-prompt-field {
