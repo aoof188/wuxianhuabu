@@ -4,16 +4,10 @@
 	z-index: 1000;
 	overflow: hidden;
 	background:
-		radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.14) 1px, transparent 1px),
-		#050607;
+		radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.14) 1px, transparent 1px), #050607;
 	background-size: 28px 28px;
 	color: #f5f7fb;
-	font-family:
-		Inter,
-		"PingFang SC",
-		"Microsoft YaHei",
-		Arial,
-		sans-serif;
+	font-family: Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif;
 	letter-spacing: 0;
 	touch-action: none;
 	user-select: none;
@@ -159,13 +153,13 @@
 	white-space: nowrap;
 }
 
-.tap-status[data-state="ready"] {
+.tap-status[data-state='ready'] {
 	border-color: rgba(82, 211, 142, 0.26);
 	background: rgba(17, 54, 36, 0.9);
 	color: #83e7ad;
 }
 
-.tap-status[data-state="missing"] {
+.tap-status[data-state='missing'] {
 	border-color: rgba(255, 104, 71, 0.3);
 	background: rgba(61, 27, 22, 0.92);
 	color: #ff9b85;
@@ -291,7 +285,7 @@
 	transform: translateY(1px);
 }
 
-.tap-left-toolbar button[data-active="true"] {
+.tap-left-toolbar button[data-active='true'] {
 	border-color: rgba(255, 104, 71, 0.72);
 	background: #3b211d;
 	color: #ffd3c8;
@@ -494,7 +488,7 @@
 	cursor: pointer;
 }
 
-.tap-api-key-panel__actions button[type="submit"] {
+.tap-api-key-panel__actions button[type='submit'] {
 	border-color: rgba(82, 211, 142, 0.28);
 	background: rgba(20, 80, 48, 0.92);
 	color: #b9f5cf;
@@ -835,19 +829,19 @@
 	font-weight: 900;
 }
 
-.tap-agent-panel__badge[data-state="ready"] {
+.tap-agent-panel__badge[data-state='ready'] {
 	border-color: rgba(82, 211, 142, 0.28);
 	background: rgba(18, 57, 39, 0.78);
 	color: #83e7ad;
 }
 
-.tap-agent-panel__badge[data-state="thinking"] {
+.tap-agent-panel__badge[data-state='thinking'] {
 	border-color: rgba(255, 104, 71, 0.34);
 	background: rgba(63, 31, 25, 0.8);
 	color: #ffd3c8;
 }
 
-.tap-agent-panel__badge[data-state="missing"] {
+.tap-agent-panel__badge[data-state='missing'] {
 	border-color: rgba(255, 104, 71, 0.28);
 	background: rgba(61, 27, 22, 0.72);
 	color: #ff9b85;
@@ -867,7 +861,7 @@
 	gap: 7px;
 }
 
-.tap-agent-message[data-role="user"] {
+.tap-agent-message[data-role='user'] {
 	justify-items: end;
 }
 
@@ -885,12 +879,12 @@
 	padding: 11px;
 }
 
-.tap-agent-message[data-role="user"] .tap-agent-message__body {
+.tap-agent-message[data-role='user'] .tap-agent-message__body {
 	background: #2b211f;
 	border-color: rgba(255, 104, 71, 0.24);
 }
 
-.tap-agent-message[data-status="error"] .tap-agent-message__body {
+.tap-agent-message[data-status='error'] .tap-agent-message__body {
 	border-color: rgba(255, 104, 71, 0.36);
 	background: rgba(61, 27, 22, 0.72);
 }
@@ -1233,7 +1227,11 @@
 	position: absolute;
 	inset: 0;
 	background-color: #000000;
-	background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.16) 1px, transparent 1px);
+	background-image: radial-gradient(
+		circle at 1px 1px,
+		rgba(255, 255, 255, 0.16) 1px,
+		transparent 1px
+	);
 	background-size: 28px 28px;
 	cursor: grab;
 }
@@ -1291,7 +1289,7 @@
 	cursor: grabbing;
 }
 
-.tap-node[data-selected="true"] {
+.tap-node[data-selected='true'] {
 	border-color: rgba(255, 104, 71, 0.85);
 	box-shadow:
 		0 0 0 3px rgba(255, 104, 71, 0.18),
@@ -1359,13 +1357,13 @@
 	white-space: nowrap;
 }
 
-.tap-node__role-badge[data-role="identity"] {
+.tap-node__role-badge[data-role='identity'] {
 	border-color: rgba(255, 104, 71, 0.46);
 	background: rgba(255, 104, 71, 0.16);
 	color: #ffd8cf;
 }
 
-.tap-node__role-badge[data-role="motion"] {
+.tap-node__role-badge[data-role='motion'] {
 	border-color: rgba(90, 170, 255, 0.42);
 	background: rgba(90, 170, 255, 0.15);
 	color: #cfe5ff;
@@ -1416,7 +1414,7 @@
 	border-color: rgba(255, 255, 255, 0.24);
 }
 
-.tap-node[data-annotation-mode="true"] .tap-image-frame {
+.tap-node[data-annotation-mode='true'] .tap-image-frame {
 	border-color: rgba(255, 104, 71, 0.78);
 	box-shadow: inset 0 0 0 2px rgba(255, 104, 71, 0.2);
 	cursor: crosshair;
@@ -1438,7 +1436,7 @@
 	pointer-events: none;
 }
 
-.tap-image-annotation-layer[data-active="true"] {
+.tap-image-annotation-layer[data-active='true'] {
 	cursor: crosshair;
 	pointer-events: auto;
 }
@@ -1452,7 +1450,7 @@
 	filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.72));
 }
 
-.tap-image-annotation-layer path[data-draft="true"] {
+.tap-image-annotation-layer path[data-draft='true'] {
 	stroke: #ff4b37;
 	stroke-dasharray: 1 0;
 }
@@ -1584,8 +1582,20 @@
 	border: 1px solid rgba(255, 255, 255, 0.09);
 	border-radius: 8px;
 	background:
-		linear-gradient(45deg, rgba(255, 255, 255, 0.035) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.035) 75%),
-		linear-gradient(45deg, rgba(255, 255, 255, 0.035) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.035) 75%),
+		linear-gradient(
+			45deg,
+			rgba(255, 255, 255, 0.035) 25%,
+			transparent 25%,
+			transparent 75%,
+			rgba(255, 255, 255, 0.035) 75%
+		),
+		linear-gradient(
+			45deg,
+			rgba(255, 255, 255, 0.035) 25%,
+			transparent 25%,
+			transparent 75%,
+			rgba(255, 255, 255, 0.035) 75%
+		),
 		#0f1013;
 	background-position:
 		0 0,
@@ -1855,7 +1865,7 @@
 	stroke-linejoin: round;
 }
 
-.tap-doodle-stage path[data-draft="true"] {
+.tap-doodle-stage path[data-draft='true'] {
 	stroke: #ff6847;
 }
 
@@ -1891,8 +1901,8 @@
 	background: #32353b;
 }
 
-.tap-size-group button[data-selected="true"],
-.tap-count-group button[data-selected="true"] {
+.tap-size-group button[data-selected='true'],
+.tap-count-group button[data-selected='true'] {
 	border-color: rgba(255, 104, 71, 0.75);
 	background: #3b211d;
 	color: #ffd3c8;
@@ -2202,4 +2212,114 @@
 	.tap-quick-menu {
 		width: min(272px, calc(100vw - 24px));
 	}
+}
+
+/* Video node (Seedance 2.0) */
+.tap-node--video {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	width: 420px;
+	padding: 12px;
+}
+
+.tap-video-sources {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.tap-video-sources__item {
+	max-width: 100%;
+	overflow: hidden;
+	padding: 3px 8px;
+	border: 1px solid rgba(255, 255, 255, 0.14);
+	border-radius: 999px;
+	background: #282a2f;
+	color: #d8dce3;
+	font-size: 11px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tap-video-params {
+	display: grid;
+	grid-template-columns: repeat(2, 1fr);
+	gap: 8px;
+}
+
+.tap-video-params label {
+	display: grid;
+	gap: 4px;
+	color: #9aa1ab;
+	font-size: 11px;
+}
+
+.tap-video-params select {
+	height: 32px;
+	padding: 0 8px;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 6px;
+	background: #282a2f;
+	color: #d8dce3;
+	font: inherit;
+	font-size: 12px;
+}
+
+.tap-video-audio {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	color: #d8dce3;
+	font-size: 12px;
+}
+
+.tap-video-frame {
+	overflow: hidden;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 8px;
+	background: #101114;
+}
+
+.tap-video-frame video {
+	display: block;
+	width: 100%;
+	max-height: 240px;
+}
+
+.tap-video-status {
+	padding: 8px 10px;
+	border-radius: 6px;
+	background: rgba(74, 144, 255, 0.12);
+	color: #9ec1ff;
+	font-size: 12px;
+}
+
+.tap-video-warning {
+	padding: 8px 10px;
+	border-radius: 6px;
+	background: rgba(255, 184, 71, 0.12);
+	color: #ffd79e;
+	font-size: 12px;
+}
+
+.tap-video-actions {
+	display: flex;
+	gap: 8px;
+}
+
+.tap-video-actions .tap-generate-button {
+	flex: 1;
+}
+
+.tap-video-actions > button[type='button'] {
+	height: 40px;
+	padding: 0 12px;
+	border: 1px solid rgba(255, 255, 255, 0.14);
+	border-radius: 8px;
+	background: #282a2f;
+	color: #d8dce3;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
 }

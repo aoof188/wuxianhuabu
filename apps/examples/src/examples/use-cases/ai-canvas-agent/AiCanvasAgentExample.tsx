@@ -11,14 +11,30 @@ import {
 } from 'react'
 import './ai-canvas-agent.css'
 
-type CanvasNodeType = 'image' | 'prompt' | 'text' | 'doodle'
+type CanvasNodeType = 'image' | 'prompt' | 'text' | 'doodle' | 'video'
 type PromptStatus = 'idle' | 'generating' | 'done' | 'error'
 type ApiStatus = 'checking' | 'ready' | 'missing'
 type AspectRatioId = '1:1' | '3:4' | '4:3' | '16:9' | '9:16'
 type AgentAction = 'answer' | 'create_prompt' | 'generate_image'
-type WorkflowPresetId = 'six-view' | 'prompt-analysis' | 'lighting-contact-sheet' | 'motion-transfer'
+type WorkflowPresetId =
+	| 'six-view'
+	| 'prompt-analysis'
+	| 'lighting-contact-sheet'
+	| 'motion-transfer'
 type ToolbarTool = 'select' | 'text' | 'annotate'
 type ImageSelectionRole = 'identity' | 'motion'
+type VideoGenerationMode = 'text' | 'first_frame' | 'first_last' | 'reference'
+type VideoNodeStatus =
+	| 'idle'
+	| 'submitting'
+	| 'queued'
+	| 'running'
+	| 'succeeded'
+	| 'failed'
+	| 'cancelled'
+	| 'expired'
+type VideoResolution = '480p' | '720p' | '1080p'
+type VideoRatio = 'adaptive' | '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9'
 
 interface Point {
 	x: number
@@ -85,7 +101,26 @@ interface DoodleNode extends BaseNode {
 	paths: string[]
 }
 
-type CanvasNode = ImageNode | PromptNode | TextNode | DoodleNode
+interface VideoNode extends BaseNode {
+	type: 'video'
+	prompt: string
+	mode: VideoGenerationMode
+	sourceImageIds: string[]
+	model: string
+	resolution: VideoResolution
+	ratio: VideoRatio
+	duration: number
+	generateAudio: boolean
+	status: VideoNodeStatus
+	taskId: string | null
+	videoUrl: string | null
+	errorMessage: string | null
+	startedAt: number | null
+	width: number
+	height: number
+}
+
+type CanvasNode = ImageNode | PromptNode | TextNode | DoodleNode | VideoNode
 
 interface CanvasEdge {
 	id: string
@@ -175,6 +210,7 @@ interface PersistedCanvasState {
 
 interface ApiStatusResponse {
 	configured?: boolean
+	arkConfigured?: boolean
 	baseUrl?: string
 	imageApiUrl?: string
 	error?: string
@@ -233,6 +269,18 @@ interface AgentChatResponse {
 	error?: string
 }
 
+interface VideoGenerationResponse {
+	taskId?: string
+	error?: string
+}
+
+interface VideoTaskResponse {
+	status?: string
+	videoUrl?: string
+	warning?: string
+	error?: string
+}
+
 interface ImagePromptAnalysisResponse {
 	prompt?: string
 	model?: string
@@ -261,6 +309,35 @@ const BLANK_IMAGE_HEIGHT = 432
 const MAX_GENERATION_COUNT = 4
 const CANVAS_STORAGE_KEY = 'tap-ai-canvas-state'
 const HISTORY_LIMIT = 80
+const VIDEO_NODE_WIDTH = 420
+const VIDEO_NODE_BASE_HEIGHT = 540
+const VIDEO_PLAYER_HEIGHT = 250
+const VIDEO_POLL_INTERVAL_MS = 5000
+const VIDEO_POLL_MAX_INTERVAL_MS = 30000
+const MAX_VIDEO_REFERENCE_IMAGES = 9
+const MAX_VIDEO_IMAGE_BYTES = 30 * 1024 * 1024
+const MAX_VIDEO_TOTAL_IMAGE_BYTES = 60 * 1024 * 1024
+
+const VIDEO_MODELS: ModelOption[] = [
+	{ id: 'doubao-seedance-2-0-260128', label: 'Seedance 2.0 标准版' },
+	{ id: 'doubao-seedance-2-0-fast-260128', label: 'Seedance 2.0 快速版' },
+]
+const VIDEO_RESOLUTION_OPTIONS: VideoResolution[] = ['480p', '720p', '1080p']
+const VIDEO_RATIO_OPTIONS: VideoRatio[] = ['adaptive', '16:9', '9:16', '1:1', '4:3', '3:4', '21:9']
+const VIDEO_DURATION_OPTIONS: Array<{ value: number; label: string }> = [
+	{ value: -1, label: '自适应' },
+	{ value: 4, label: '4 秒' },
+	{ value: 5, label: '5 秒' },
+	{ value: 8, label: '8 秒' },
+	{ value: 10, label: '10 秒' },
+	{ value: 15, label: '15 秒' },
+]
+const VIDEO_MODE_LABELS: Record<VideoGenerationMode, string> = {
+	text: '文生视频',
+	first_frame: '首帧图生视频',
+	first_last: '首尾帧视频',
+	reference: '参考图视频',
+}
 
 const DEFAULT_IMAGE_MODELS: ModelOption[] = [
 	{ id: 'gpt-image-2', label: 'gpt-image-2' },
@@ -414,6 +491,7 @@ export default function AiCanvasAgentExample() {
 	const [apiKeyInput, setApiKeyInput] = useState('')
 	const [apiBaseUrlInput, setApiBaseUrlInput] = useState('')
 	const [apiKeySaving, setApiKeySaving] = useState(false)
+	const [arkStatus, setArkStatus] = useState<ApiStatus>('checking')
 	const [imageModels, setImageModels] = useState<ModelOption[]>([])
 	const [imageModel, setImageModel] = useState('')
 	const [textModels, setTextModels] = useState<ModelOption[]>([])
@@ -469,6 +547,59 @@ export default function AiCanvasAgentExample() {
 		[nodes, agentReferenceImageIds]
 	)
 
+	const videoPollersRef = useRef(new Set<string>())
+
+	async function pollVideoTask(nodeId: string, taskId: string) {
+		if (videoPollersRef.current.has(taskId)) return
+		videoPollersRef.current.add(taskId)
+		let delay = VIDEO_POLL_INTERVAL_MS
+		try {
+			while (true) {
+				await new Promise((resolve) => window.setTimeout(resolve, delay))
+				let data: VideoTaskResponse
+				try {
+					const response = await fetch(`/api/video-task?id=${encodeURIComponent(taskId)}`)
+					data = (await response.json()) as VideoTaskResponse
+					if (!response.ok) throw new Error(data.error || '查询视频任务失败')
+				} catch {
+					delay = Math.min(VIDEO_POLL_MAX_INTERVAL_MS, delay * 2)
+					updateVideoNode(nodeId, { errorMessage: '网络连接中断，正在重试…' })
+					continue
+				}
+				delay = VIDEO_POLL_INTERVAL_MS
+				const status = data.status || 'running'
+				if (status === 'succeeded' && data.videoUrl) {
+					updateVideoNode(nodeId, {
+						status: 'succeeded',
+						videoUrl: data.videoUrl,
+						errorMessage: data.warning || null,
+					})
+					setCanvasNotice(data.warning ? '视频已生成（转存失败，请及时下载）' : '视频已生成')
+					return
+				}
+				if (status === 'failed' || status === 'cancelled' || status === 'expired') {
+					updateVideoNode(nodeId, {
+						status: status as VideoNodeStatus,
+						errorMessage:
+							data.error ||
+							(status === 'expired'
+								? '任务已过期'
+								: status === 'cancelled'
+									? '任务已取消'
+									: '视频生成失败'),
+					})
+					return
+				}
+				updateVideoNode(nodeId, {
+					status: status === 'queued' ? 'queued' : 'running',
+					errorMessage: null,
+				})
+			}
+		} finally {
+			videoPollersRef.current.delete(taskId)
+		}
+	}
+
 	useEffect(() => {
 		const normalizedNodes = normalizeCanvasNodeDisplayLayout(nodes)
 		if (!normalizedNodes) return
@@ -487,13 +618,15 @@ export default function AiCanvasAgentExample() {
 			.filter(isImageNode)
 			.map((node) => ({
 				node,
-				targetAspectRatio: node.targetAspectRatio || inferTargetAspectRatioFromPrompt(node.prompt || ''),
+				targetAspectRatio:
+					node.targetAspectRatio || inferTargetAspectRatioFromPrompt(node.prompt || ''),
 			}))
 			.filter(({ node, targetAspectRatio }) => {
 				if (!targetAspectRatio) return false
 				if (aspectNormalizationRef.current.has(node.id)) return false
 				const targetSize = parseApiSize(
-					ASPECT_RATIOS.find((item) => item.id === targetAspectRatio)?.apiSize || ASPECT_RATIOS[0].apiSize
+					ASPECT_RATIOS.find((item) => item.id === targetAspectRatio)?.apiSize ||
+						ASPECT_RATIOS[0].apiSize
 				)
 				return !isAspectRatioClose({ w: node.naturalWidth, h: node.naturalHeight }, targetSize)
 			})
@@ -504,7 +637,8 @@ export default function AiCanvasAgentExample() {
 		Promise.all(
 			candidates.map(async ({ node, targetAspectRatio }) => {
 				const targetSize = parseApiSize(
-					ASPECT_RATIOS.find((item) => item.id === targetAspectRatio)?.apiSize || ASPECT_RATIOS[0].apiSize
+					ASPECT_RATIOS.find((item) => item.id === targetAspectRatio)?.apiSize ||
+						ASPECT_RATIOS[0].apiSize
 				)
 				const normalized = await fitImageToTargetCanvas(node.imageUrl, targetSize)
 				const display = getTrueDisplaySize(normalized.dimensions.w, normalized.dimensions.h)
@@ -524,7 +658,7 @@ export default function AiCanvasAgentExample() {
 				current.map((node) => {
 					if (!isImageNode(node)) return node
 					const patch = patches.find((item) => item.id === node.id)
-					return patch ? { ...node, ...patch } : node
+					return patch ? ({ ...node, ...patch } as ImageNode) : node
 				})
 			)
 		})
@@ -552,6 +686,19 @@ export default function AiCanvasAgentExample() {
 			cancelled = true
 		}
 	}, [])
+
+	useEffect(() => {
+		if (!isStorageReady) return
+		for (const node of nodes) {
+			if (
+				isVideoNode(node) &&
+				node.taskId &&
+				(node.status === 'queued' || node.status === 'running')
+			) {
+				void pollVideoTask(node.id, node.taskId)
+			}
+		}
+	}, [isStorageReady, nodes])
 
 	useEffect(() => {
 		if (!isStorageReady) return
@@ -593,6 +740,7 @@ export default function AiCanvasAgentExample() {
 			const status = await checkApiStatus()
 			if (cancelled) return
 			setApiStatus(status.configured ? 'ready' : 'missing')
+			setArkStatus(status.arkConfigured ? 'ready' : 'missing')
 			if (!status.configured) {
 				setImageModels([])
 				setImageModel('')
@@ -761,7 +909,10 @@ export default function AiCanvasAgentExample() {
 		})
 	}
 
-	function handleConnectorPointerDown(event: ReactPointerEvent<HTMLButtonElement>, node: ImageNode) {
+	function handleConnectorPointerDown(
+		event: ReactPointerEvent<HTMLButtonElement>,
+		node: ImageNode
+	) {
 		event.stopPropagation()
 		setSelectedNodeIds([node.id])
 		setGenerationMenu(null)
@@ -825,7 +976,9 @@ export default function AiCanvasAgentExample() {
 		}
 		if (selectionBox) {
 			const rect = normalizeRectFromPoints(selectionBox.startCanvas, selectionBox.currentCanvas)
-			const selectedIds = nodes.filter((node) => rectsIntersect(rect, getNodeRect(node))).map((node) => node.id)
+			const selectedIds = nodes
+				.filter((node) => rectsIntersect(rect, getNodeRect(node)))
+				.map((node) => node.id)
 			setSelectedNodeIds(selectedIds)
 			setCanvasNotice(selectedIds.length ? `已框选 ${selectedIds.length} 个节点` : '没有框选到节点')
 			setSelectionBox(null)
@@ -861,7 +1014,9 @@ export default function AiCanvasAgentExample() {
 	}
 
 	async function handleDrop(event: ReactDragEvent<HTMLDivElement>) {
-		const files = Array.from(event.dataTransfer.files).filter((file) => file.type.startsWith('image/'))
+		const files = Array.from(event.dataTransfer.files).filter((file) =>
+			file.type.startsWith('image/')
+		)
 		if (!files.length) return
 		event.preventDefault()
 		setIsDraggingFile(false)
@@ -965,7 +1120,9 @@ export default function AiCanvasAgentExample() {
 
 	function handleCreatePromptFromMenu() {
 		if (!generationMenu) return
-		const source = nodes.find((node): node is ImageNode => node.id === generationMenu.fromNodeId && isImageNode(node))
+		const source = nodes.find(
+			(node): node is ImageNode => node.id === generationMenu.fromNodeId && isImageNode(node)
+		)
 		if (!source) {
 			setGenerationMenu(null)
 			return
@@ -988,7 +1145,9 @@ export default function AiCanvasAgentExample() {
 
 	function handleCreateWorkflowPresetFromMenu(presetId: WorkflowPresetId) {
 		if (!generationMenu) return
-		const source = nodes.find((node): node is ImageNode => node.id === generationMenu.fromNodeId && isImageNode(node))
+		const source = nodes.find(
+			(node): node is ImageNode => node.id === generationMenu.fromNodeId && isImageNode(node)
+		)
 		if (!source) {
 			setGenerationMenu(null)
 			return
@@ -1001,7 +1160,11 @@ export default function AiCanvasAgentExample() {
 		createWorkflowPromptFromImage(source, presetId, point)
 	}
 
-	function createWorkflowPromptFromImage(source: ImageNode, presetId: WorkflowPresetId, point?: Point) {
+	function createWorkflowPromptFromImage(
+		source: ImageNode,
+		presetId: WorkflowPresetId,
+		point?: Point
+	) {
 		const preset = WORKFLOW_PRESETS.find((item) => item.id === presetId)
 		if (!preset) return
 		const sourceSize = getNodeSize(source)
@@ -1104,6 +1267,58 @@ export default function AiCanvasAgentExample() {
 		}
 	}
 
+	function createVideoNodeFromSelection() {
+		const sourceNodes = getSelectedImageNodes().slice(0, MAX_VIDEO_REFERENCE_IMAGES)
+		const mode: VideoGenerationMode =
+			sourceNodes.length === 0
+				? 'text'
+				: sourceNodes.length === 1
+					? 'first_frame'
+					: sourceNodes.length === 2
+						? 'first_last'
+						: 'reference'
+		const anchor = sourceNodes[0]
+		const center = getViewportCenter()
+		const videoNode: VideoNode = {
+			id: createNodeId('video'),
+			type: 'video',
+			x: anchor ? anchor.x + getNodeSize(anchor).w + NODE_GAP : center.x - VIDEO_NODE_WIDTH / 2,
+			y: anchor ? anchor.y : center.y - VIDEO_NODE_BASE_HEIGHT / 2,
+			prompt: '',
+			mode,
+			sourceImageIds: sourceNodes.map((node) => node.id),
+			model: VIDEO_MODELS[0].id,
+			resolution: '720p',
+			ratio: 'adaptive',
+			duration: 5,
+			generateAudio: true,
+			status: 'idle',
+			taskId: null,
+			videoUrl: null,
+			errorMessage: null,
+			startedAt: null,
+			width: VIDEO_NODE_WIDTH,
+			height: VIDEO_NODE_BASE_HEIGHT,
+		}
+		setNodes((current) => [...current, videoNode])
+		if (sourceNodes.length) {
+			setEdges((current) => [
+				...current,
+				...sourceNodes.map((sourceNode) => ({
+					id: createEdgeId(),
+					from: sourceNode.id,
+					to: videoNode.id,
+				})),
+			])
+		}
+		setSelectedNodeIds([videoNode.id])
+		setCanvasNotice(
+			sourceNodes.length === 0
+				? '已创建文生视频节点，填写提示词后生成'
+				: `已创建「${VIDEO_MODE_LABELS[mode]}」节点，引用 ${sourceNodes.length} 张图片`
+		)
+	}
+
 	function createTextNodeAt(point: Point) {
 		const textNode: TextNode = {
 			id: createNodeId('text'),
@@ -1119,7 +1334,7 @@ export default function AiCanvasAgentExample() {
 		setCanvasNotice('已添加文本工具节点')
 	}
 
-	function createDoodleNodeAt(point: Point) {
+	function _createDoodleNodeAt(point: Point) {
 		const doodleNode: DoodleNode = {
 			id: createNodeId('doodle'),
 			type: 'doodle',
@@ -1161,7 +1376,10 @@ export default function AiCanvasAgentExample() {
 		promptNode.width = imageSize.w
 		promptNode.height = imageSize.h
 		setNodes((current) => [...current, imageNode, promptNode])
-		setEdges((current) => [...current, { id: createEdgeId(), from: imageNode.id, to: promptNode.id }])
+		setEdges((current) => [
+			...current,
+			{ id: createEdgeId(), from: imageNode.id, to: promptNode.id },
+		])
 		setSelectedNodeIds([promptNode.id])
 		setCanvasNotice('已添加空白图片节点和提示词对话框')
 	}
@@ -1179,12 +1397,13 @@ export default function AiCanvasAgentExample() {
 		setCanvasNotice('已进入图片标注模式：直接在图片上圈选或手绘局部修改区域')
 	}
 
-	function handleQuickAction(action: 'image' | 'text' | 'annotate' | 'motion' | 'agent') {
+	function handleQuickAction(action: 'image' | 'text' | 'annotate' | 'motion' | 'video' | 'agent') {
 		if (!quickActionMenu) return
 		if (action === 'image') createBlankImagePromptPair(quickActionMenu.canvasPoint)
 		if (action === 'text') createTextNodeAt(quickActionMenu.canvasPoint)
 		if (action === 'annotate') startImageAnnotation()
 		if (action === 'motion') createMotionTransferPrompt()
+		if (action === 'video') createVideoNodeFromSelection()
 		if (action === 'agent') setAgentPanelOpen(true)
 		setQuickActionMenu(null)
 	}
@@ -1215,7 +1434,9 @@ export default function AiCanvasAgentExample() {
 				return { ...node, x: center - rect.w / 2 }
 			})
 		)
-		setCanvasNotice(mode === 'left' ? '已左对齐节点' : mode === 'right' ? '已右对齐节点' : '已居中对齐节点')
+		setCanvasNotice(
+			mode === 'left' ? '已左对齐节点' : mode === 'right' ? '已右对齐节点' : '已居中对齐节点'
+		)
 	}
 
 	function openPromptExtension() {
@@ -1248,7 +1469,15 @@ export default function AiCanvasAgentExample() {
 				y: sourceRect ? sourceRect.y : center.y - PROMPT_NODE_HEIGHT / 2,
 			},
 			prompt: preset.prompt,
-			size: preset.id === 'product-six-view' ? '16:9' : sourceNodes[0] ? inferAspectRatioFromDimensions(sourceNodes[0].naturalWidth, sourceNodes[0].naturalHeight) : '1:1',
+			size:
+				preset.id === 'product-six-view'
+					? '16:9'
+					: sourceNodes[0]
+						? inferAspectRatioFromDimensions(
+								sourceNodes[0].naturalWidth,
+								sourceNodes[0].naturalHeight
+							)
+						: '1:1',
 			count: 1,
 			presetTitle: preset.title,
 		})
@@ -1256,7 +1485,11 @@ export default function AiCanvasAgentExample() {
 		if (sourceNodes.length) {
 			setEdges((current) => [
 				...current,
-				...sourceNodes.map((sourceNode) => ({ id: createEdgeId(), from: sourceNode.id, to: promptNode.id })),
+				...sourceNodes.map((sourceNode) => ({
+					id: createEdgeId(),
+					from: sourceNode.id,
+					to: promptNode.id,
+				})),
 			])
 		}
 		setSelectedNodeIds([promptNode.id])
@@ -1265,13 +1498,17 @@ export default function AiCanvasAgentExample() {
 
 	function updatePromptNode(nodeId: string, patch: Partial<PromptNode>) {
 		setNodes((current) =>
-			current.map((node) => (node.id === nodeId && isPromptNode(node) ? { ...node, ...patch } : node))
+			current.map((node) =>
+				node.id === nodeId && isPromptNode(node) ? { ...node, ...patch } : node
+			)
 		)
 	}
 
 	function updateImageNode(nodeId: string, patch: Partial<ImageNode>) {
 		setNodes((current) =>
-			current.map((node) => (node.id === nodeId && isImageNode(node) ? { ...node, ...patch } : node))
+			current.map((node) =>
+				node.id === nodeId && isImageNode(node) ? { ...node, ...patch } : node
+			)
 		)
 	}
 
@@ -1283,7 +1520,17 @@ export default function AiCanvasAgentExample() {
 
 	function updateDoodleNode(nodeId: string, patch: Partial<DoodleNode>) {
 		setNodes((current) =>
-			current.map((node) => (node.id === nodeId && isDoodleNode(node) ? { ...node, ...patch } : node))
+			current.map((node) =>
+				node.id === nodeId && isDoodleNode(node) ? { ...node, ...patch } : node
+			)
+		)
+	}
+
+	function updateVideoNode(nodeId: string, patch: Partial<VideoNode>) {
+		setNodes((current) =>
+			current.map((node) =>
+				node.id === nodeId && isVideoNode(node) ? { ...node, ...patch } : node
+			)
 		)
 	}
 
@@ -1324,7 +1571,100 @@ export default function AiCanvasAgentExample() {
 		}
 	}
 
-	async function generateImageForPromptNode(promptNode: PromptNode, sourceOverride?: ImageNode[] | ImageNode | null) {
+	async function generateVideoForNode(videoNode: VideoNode) {
+		if (arkStatus !== 'ready') {
+			updateVideoNode(videoNode.id, {
+				status: 'failed',
+				errorMessage: '未配置火山引擎 ARK API Key，请点击顶部「检查接口」填写。',
+			})
+			return
+		}
+		const prompt = videoNode.prompt.trim()
+		if (!prompt) {
+			updateVideoNode(videoNode.id, { status: 'failed', errorMessage: '请输入视频提示词' })
+			return
+		}
+		const sourceNodes = getVideoSourceImages(videoNode, nodes)
+		if (videoNode.mode === 'first_frame' && sourceNodes.length < 1) {
+			updateVideoNode(videoNode.id, {
+				status: 'failed',
+				errorMessage: '首帧模式需要 1 张图片，请重新连接图片节点',
+			})
+			return
+		}
+		if (videoNode.mode === 'first_last' && sourceNodes.length < 2) {
+			updateVideoNode(videoNode.id, {
+				status: 'failed',
+				errorMessage: '首尾帧模式需要 2 张图片，请重新连接图片节点',
+			})
+			return
+		}
+		if (videoNode.mode === 'reference' && sourceNodes.length < 1) {
+			updateVideoNode(videoNode.id, {
+				status: 'failed',
+				errorMessage: '参考图模式至少需要 1 张图片',
+			})
+			return
+		}
+		const images = buildVideoImageInputs(videoNode.mode, sourceNodes)
+		const sizeError = validateVideoImageSizes(images.map((image) => image.url))
+		if (sizeError) {
+			updateVideoNode(videoNode.id, { status: 'failed', errorMessage: sizeError })
+			return
+		}
+
+		updateVideoNode(videoNode.id, {
+			status: 'submitting',
+			errorMessage: null,
+			videoUrl: null,
+			taskId: null,
+			startedAt: Date.now(),
+		})
+		try {
+			const response = await fetch('/api/generate-video', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					model: videoNode.model,
+					prompt,
+					images,
+					resolution: videoNode.resolution,
+					ratio: videoNode.ratio,
+					duration: videoNode.duration,
+					generateAudio: videoNode.generateAudio,
+				}),
+			})
+			const data = (await response.json()) as VideoGenerationResponse
+			if (!response.ok || !data.taskId) throw new Error(data.error || '视频任务创建失败')
+			updateVideoNode(videoNode.id, { status: 'queued', taskId: data.taskId })
+			setCanvasNotice('视频任务已创建，正在排队生成')
+		} catch (err) {
+			updateVideoNode(videoNode.id, {
+				status: 'failed',
+				errorMessage: err instanceof Error ? err.message : '视频任务创建失败',
+			})
+		}
+	}
+
+	async function cancelVideoTask(videoNode: VideoNode) {
+		if (!videoNode.taskId) return
+		try {
+			const response = await fetch(`/api/video-task?id=${encodeURIComponent(videoNode.taskId)}`, {
+				method: 'DELETE',
+			})
+			const data = (await response.json()) as VideoTaskResponse
+			if (!response.ok) throw new Error(data.error || '取消任务失败')
+			updateVideoNode(videoNode.id, { status: 'cancelled', errorMessage: '任务已取消' })
+			setCanvasNotice('视频任务已取消')
+		} catch (err) {
+			setCanvasNotice(err instanceof Error ? err.message : '取消任务失败')
+		}
+	}
+
+	async function generateImageForPromptNode(
+		promptNode: PromptNode,
+		sourceOverride?: ImageNode[] | ImageNode | null
+	) {
 		if (!apiReady) {
 			updatePromptNode(promptNode.id, {
 				status: 'error',
@@ -1341,7 +1681,8 @@ export default function AiCanvasAgentExample() {
 		updatePromptNode(promptNode.id, { status: 'generating', error: '' })
 
 		try {
-			const sizeConfig = ASPECT_RATIOS.find((item) => item.id === promptNode.size) || ASPECT_RATIOS[0]
+			const sizeConfig =
+				ASPECT_RATIOS.find((item) => item.id === promptNode.size) || ASPECT_RATIOS[0]
 			const generationCount = normalizeGenerationCount(promptNode.count)
 			const sourceImageUrls = await Promise.all(sourceNodes.map(createGenerationSourceImageUrl))
 			const generationPrompt = buildImageGenerationPrompt(
@@ -1558,10 +1899,17 @@ export default function AiCanvasAgentExample() {
 			const thinking = data.thinking?.length
 				? data.thinking.slice(0, 5)
 				: ['理解需求', '规划画面', '准备执行']
-			const fallbackPrompt = createClientFallbackImagePrompt(content, referencedImages, referenceLabels)
+			const fallbackPrompt = createClientFallbackImagePrompt(
+				content,
+				referencedImages,
+				referenceLabels
+			)
 			const prompt = data.prompt?.trim() || fallbackPrompt
 			const shouldUseFallbackAction =
-				prompt && data.action === 'answer' && fallbackPrompt && shouldRequestImageGeneration(content)
+				prompt &&
+				data.action === 'answer' &&
+				fallbackPrompt &&
+				shouldRequestImageGeneration(content)
 			const action =
 				shouldUseFallbackAction || !data.action
 					? prompt
@@ -1672,7 +2020,11 @@ export default function AiCanvasAgentExample() {
 		if (sourceNodes.length) {
 			setEdges((current) => [
 				...current,
-				...sourceNodes.map((sourceNode) => ({ id: createEdgeId(), from: sourceNode.id, to: promptId })),
+				...sourceNodes.map((sourceNode) => ({
+					id: createEdgeId(),
+					from: sourceNode.id,
+					to: promptId,
+				})),
 			])
 		}
 		setSelectedNodeIds([promptId])
@@ -1708,7 +2060,9 @@ export default function AiCanvasAgentExample() {
 		const node = nodes.find((item): item is ImageNode => item.id === nodeId && isImageNode(item))
 		if (!node) return
 		setAgentPanelOpen(true)
-		setAgentReferenceImageIds((current) => (current.includes(node.id) ? current : [...current, node.id]))
+		setAgentReferenceImageIds((current) =>
+			current.includes(node.id) ? current : [...current, node.id]
+		)
 		setAgentInput((current) => appendImageParameterBlock(current, node))
 		setCanvasNotice(`已把「${node.title}」参数发送到 Agent`)
 	}
@@ -1771,7 +2125,10 @@ export default function AiCanvasAgentExample() {
 					{apiReady && imageModels.length > 0 ? (
 						<label className="tap-model-select">
 							<span>模型</span>
-							<select value={activeImageModel} onChange={(event) => setImageModel(event.target.value)}>
+							<select
+								value={activeImageModel}
+								onChange={(event) => setImageModel(event.target.value)}
+							>
 								{imageModels.map((model) => (
 									<option key={model.id} value={model.id}>
 										{model.label}
@@ -1813,6 +2170,7 @@ export default function AiCanvasAgentExample() {
 				onToggleHistory={() => setHistoryPanelOpen((current) => !current)}
 				onCreateImage={() => createBlankImagePromptPair(getViewportCenter())}
 				onMotionTransfer={createMotionTransferPrompt}
+				onCreateVideo={createVideoNodeFromSelection}
 				onOpenExtension={openPromptExtension}
 			/>
 
@@ -1876,53 +2234,67 @@ export default function AiCanvasAgentExample() {
 					}}
 				>
 					{edgesVisible && (
-						<svg className="tap-canvas__edges" width="8000" height="6000" viewBox="-3000 -2200 8000 6000">
+						<svg
+							className="tap-canvas__edges"
+							width="8000"
+							height="6000"
+							viewBox="-3000 -2200 8000 6000"
+						>
 							{edges.map((edge) => (
 								<EdgePath key={edge.id} edge={edge} nodes={nodes} />
 							))}
 							{draftConnection && (
-								<path className="tap-edge tap-edge--draft" d={createBezierPath(draftConnection.from, draftConnection.to)} />
+								<path
+									className="tap-edge tap-edge--draft"
+									d={createBezierPath(draftConnection.from, draftConnection.to)}
+								/>
 							)}
 						</svg>
 					)}
 					{nodes.map((node) => {
 						if (isImageNode(node)) {
 							return (
-							<ImageNodeView
-								key={node.id}
-								node={node}
-								selected={selectedNodeIds.includes(node.id)}
-								onPointerDown={handleNodePointerDown}
-								onConnectorPointerDown={handleConnectorPointerDown}
-								onPreview={(targetNode) => setPreviewImageNodeId(targetNode.id)}
-								onDownload={downloadImageNode}
-								onReference={sendImageParametersToAgent}
-								onDelete={(targetNode) => deleteNodes([targetNode.id])}
-								onWorkflowPreset={createWorkflowPromptFromImage}
-								onMotionTransfer={createMotionTransferPrompt}
-								onAnnotationChange={(nodeId, paths) => updateImageNode(nodeId, { annotations: paths })}
-								onAnnotationNoteChange={(nodeId, annotationNote) => updateImageNode(nodeId, { annotationNote })}
-								onClearAnnotations={(nodeId) => updateImageNode(nodeId, { annotations: [], annotationNote: '' })}
-								onAnnotatedEdit={createAnnotatedEditPromptFromImage}
-								referenceToken={node.prompt ? '生成图' : '图片'}
-								selectionRole={selectedImageRoleById.get(node.id)}
-								motionTransferReady={selectedImageNodes.length >= 2}
-								annotationMode={annotationModeNodeId === node.id}
-							/>
+								<ImageNodeView
+									key={node.id}
+									node={node}
+									selected={selectedNodeIds.includes(node.id)}
+									onPointerDown={handleNodePointerDown}
+									onConnectorPointerDown={handleConnectorPointerDown}
+									onPreview={(targetNode) => setPreviewImageNodeId(targetNode.id)}
+									onDownload={downloadImageNode}
+									onReference={sendImageParametersToAgent}
+									onDelete={(targetNode) => deleteNodes([targetNode.id])}
+									onWorkflowPreset={createWorkflowPromptFromImage}
+									onMotionTransfer={createMotionTransferPrompt}
+									onAnnotationChange={(nodeId, paths) =>
+										updateImageNode(nodeId, { annotations: paths })
+									}
+									onAnnotationNoteChange={(nodeId, annotationNote) =>
+										updateImageNode(nodeId, { annotationNote })
+									}
+									onClearAnnotations={(nodeId) =>
+										updateImageNode(nodeId, { annotations: [], annotationNote: '' })
+									}
+									onAnnotatedEdit={createAnnotatedEditPromptFromImage}
+									referenceToken={node.prompt ? '生成图' : '图片'}
+									selectionRole={selectedImageRoleById.get(node.id)}
+									motionTransferReady={selectedImageNodes.length >= 2}
+									annotationMode={annotationModeNodeId === node.id}
+								/>
 							)
 						}
 						if (isPromptNode(node)) {
 							return (
-							<PromptNodeView
-								key={node.id}
-								node={node}
-								selected={selectedNodeIds.includes(node.id)}
-								apiReady={apiReady}
-								onPointerDown={handleNodePointerDown}
-								onChange={updatePromptNode}
-								onGenerate={handleGenerateImage}
-								onDelete={(targetNode) => deleteNodes([targetNode.id])}
-							/>
+								<PromptNodeView
+									key={node.id}
+									node={node}
+									selected={selectedNodeIds.includes(node.id)}
+									apiReady={apiReady}
+									onPointerDown={handleNodePointerDown}
+									onChange={updatePromptNode}
+									onGenerate={handleGenerateImage}
+									onDelete={(targetNode) => deleteNodes([targetNode.id])}
+								/>
 							)
 						}
 						if (isTextNode(node)) {
@@ -1933,6 +2305,22 @@ export default function AiCanvasAgentExample() {
 									selected={selectedNodeIds.includes(node.id)}
 									onPointerDown={handleNodePointerDown}
 									onChange={updateTextNode}
+									onDelete={(targetNode) => deleteNodes([targetNode.id])}
+								/>
+							)
+						}
+						if (isVideoNode(node)) {
+							return (
+								<VideoNodeView
+									key={node.id}
+									node={node}
+									sourceImages={getVideoSourceImages(node, nodes)}
+									selected={selectedNodeIds.includes(node.id)}
+									arkReady={arkStatus === 'ready'}
+									onPointerDown={handleNodePointerDown}
+									onChange={updateVideoNode}
+									onGenerate={(targetNode) => void generateVideoForNode(targetNode)}
+									onCancel={(targetNode) => void cancelVideoTask(targetNode)}
 									onDelete={(targetNode) => deleteNodes([targetNode.id])}
 								/>
 							)
@@ -1973,7 +2361,11 @@ export default function AiCanvasAgentExample() {
 					</button>
 					<div className="tap-generate-menu__presets" aria-label="工作流预设">
 						{WORKFLOW_PRESETS.map((preset) => (
-							<button key={preset.id} type="button" onClick={() => handleCreateWorkflowPresetFromMenu(preset.id)}>
+							<button
+								key={preset.id}
+								type="button"
+								onClick={() => handleCreateWorkflowPresetFromMenu(preset.id)}
+							>
 								<strong>{preset.title}</strong>
 								<small>{preset.description}</small>
 							</button>
@@ -2021,6 +2413,7 @@ function CanvasLeftToolbar({
 	onToggleHistory,
 	onCreateImage,
 	onMotionTransfer,
+	onCreateVideo,
 	onOpenExtension,
 }: {
 	activeTool: ToolbarTool
@@ -2029,14 +2422,15 @@ function CanvasLeftToolbar({
 	historyPanelOpen: boolean
 	promptLibraryOpen: boolean
 	selectedImageCount: number
-	onToolSelect: (tool: ToolbarTool) => void
-	onAlign: (mode: 'left' | 'center' | 'right') => void
-	onToggleEdges: () => void
-	onToggleAgent: () => void
-	onToggleHistory: () => void
-	onCreateImage: () => void
-	onMotionTransfer: () => void
-	onOpenExtension: () => void
+	onToolSelect(tool: ToolbarTool): void
+	onAlign(mode: 'left' | 'center' | 'right'): void
+	onToggleEdges(): void
+	onToggleAgent(): void
+	onToggleHistory(): void
+	onCreateImage(): void
+	onMotionTransfer(): void
+	onCreateVideo(): void
+	onOpenExtension(): void
 }) {
 	const [alignMenuOpen, setAlignMenuOpen] = useState(false)
 
@@ -2060,24 +2454,51 @@ function CanvasLeftToolbar({
 					</button>
 					{alignMenuOpen && (
 						<div className="tap-left-toolbar__popover" aria-label="对齐选项">
-							<button type="button" onClick={() => handleAlign('left')} title="左对齐" aria-label="左对齐">
+							<button
+								type="button"
+								onClick={() => handleAlign('left')}
+								title="左对齐"
+								aria-label="左对齐"
+							>
 								<Icon name="alignLeft" />
 							</button>
-							<button type="button" onClick={() => handleAlign('center')} title="居中对齐" aria-label="居中对齐">
+							<button
+								type="button"
+								onClick={() => handleAlign('center')}
+								title="居中对齐"
+								aria-label="居中对齐"
+							>
 								<Icon name="alignCenter" />
 							</button>
-							<button type="button" onClick={() => handleAlign('right')} title="右对齐" aria-label="右对齐">
+							<button
+								type="button"
+								onClick={() => handleAlign('right')}
+								title="右对齐"
+								aria-label="右对齐"
+							>
 								<Icon name="alignRight" />
 							</button>
 						</div>
 					)}
 				</div>
-				<button type="button" data-active={activeTool === 'select'} onClick={() => onToolSelect('select')} title="选择" aria-label="选择">
+				<button
+					type="button"
+					data-active={activeTool === 'select'}
+					onClick={() => onToolSelect('select')}
+					title="选择"
+					aria-label="选择"
+				>
 					<Icon name="cursor" />
 				</button>
 			</div>
 			<div className="tap-left-toolbar__group" aria-label="创作工具">
-				<button type="button" data-active={activeTool === 'text'} onClick={() => onToolSelect('text')} title="文本工具" aria-label="文本工具">
+				<button
+					type="button"
+					data-active={activeTool === 'text'}
+					onClick={() => onToolSelect('text')}
+					title="文本工具"
+					aria-label="文本工具"
+				>
 					<Icon name="text" />
 				</button>
 				<button
@@ -2089,24 +2510,61 @@ function CanvasLeftToolbar({
 				>
 					<Icon name="annotate" />
 				</button>
-				<button type="button" onClick={onCreateImage} title="空白图片节点" aria-label="空白图片节点">
+				<button
+					type="button"
+					onClick={onCreateImage}
+					title="空白图片节点"
+					aria-label="空白图片节点"
+				>
 					<Icon name="image" />
 				</button>
 			</div>
 			<div className="tap-left-toolbar__group" aria-label="面板">
-				<button type="button" data-active={edgesVisible} onClick={onToggleEdges} title="隐藏或显示连线" aria-label="隐藏或显示连线">
+				<button
+					type="button"
+					data-active={edgesVisible}
+					onClick={onToggleEdges}
+					title="隐藏或显示连线"
+					aria-label="隐藏或显示连线"
+				>
 					<Icon name="link" />
 				</button>
-				<button type="button" data-active={historyPanelOpen} onClick={onToggleHistory} title="图库历史" aria-label="图库历史">
+				<button
+					type="button"
+					data-active={historyPanelOpen}
+					onClick={onToggleHistory}
+					title="图库历史"
+					aria-label="图库历史"
+				>
 					<Icon name="history" />
 				</button>
-				<button type="button" data-active={agentPanelOpen} onClick={onToggleAgent} title="Agent 对话" aria-label="Agent 对话">
+				<button
+					type="button"
+					data-active={agentPanelOpen}
+					onClick={onToggleAgent}
+					title="Agent 对话"
+					aria-label="Agent 对话"
+				>
 					<Icon name="bot" />
 				</button>
 			</div>
 			<div className="tap-left-toolbar__group" aria-label="AI 工作流">
-				<button type="button" data-active={selectedImageCount >= 2} onClick={onMotionTransfer} title="动作迁移" aria-label="动作迁移">
+				<button
+					type="button"
+					data-active={selectedImageCount >= 2}
+					onClick={onMotionTransfer}
+					title="动作迁移"
+					aria-label="动作迁移"
+				>
 					<Icon name="motion" />
+				</button>
+				<button
+					type="button"
+					onClick={onCreateVideo}
+					title="生成视频（Seedance 2.0）"
+					aria-label="生成视频"
+				>
+					<Icon name="video" />
 				</button>
 				<button
 					type="button"
@@ -2140,6 +2598,7 @@ function Icon({
 		| 'motion'
 		| 'text'
 		| 'trash'
+		| 'video'
 		| 'wand'
 }) {
 	const common = {
@@ -2278,6 +2737,14 @@ function Icon({
 			</svg>
 		)
 	}
+	if (name === 'video') {
+		return (
+			<svg {...common}>
+				<rect x="3" y="6" width="13" height="12" rx="2" />
+				<path d="M16 10l5-3v10l-5-3" />
+			</svg>
+		)
+	}
 	if (name === 'trash') {
 		return (
 			<svg {...common}>
@@ -2303,15 +2770,15 @@ function QuickActionMenuView({
 	onClose,
 }: {
 	menu: QuickActionMenu
-	onAction: (action: 'image' | 'text' | 'annotate' | 'motion' | 'agent') => void
-	onClose: () => void
+	onAction(action: 'image' | 'text' | 'annotate' | 'motion' | 'video' | 'agent'): void
+	onClose(): void
 }) {
 	return (
 		<div
 			className="tap-quick-menu"
 			style={{
 				left: Math.min(menu.screenPoint.x, window.innerWidth - 236),
-				top: Math.min(menu.screenPoint.y, window.innerHeight - 252),
+				top: Math.min(menu.screenPoint.y, window.innerHeight - 300),
 			}}
 			onPointerDown={(event) => event.stopPropagation()}
 		>
@@ -2336,6 +2803,10 @@ function QuickActionMenuView({
 			<button type="button" onClick={() => onAction('motion')}>
 				<span>动作迁移</span>
 				<small>需要先选中两张图片</small>
+			</button>
+			<button type="button" onClick={() => onAction('video')}>
+				<span>生成视频</span>
+				<small>Seedance 2.0，选中图片可作首帧/参考图</small>
 			</button>
 			<button type="button" onClick={() => onAction('agent')}>
 				<span>调出 Agent</span>
@@ -2371,18 +2842,18 @@ function ImageNodeView({
 	selectionRole?: ImageSelectionRole
 	motionTransferReady: boolean
 	annotationMode: boolean
-	onPointerDown: (event: ReactPointerEvent<HTMLElement>, node: CanvasNode) => void
-	onConnectorPointerDown: (event: ReactPointerEvent<HTMLButtonElement>, node: ImageNode) => void
-	onPreview: (node: ImageNode) => void
-	onDownload: (node: ImageNode) => void
-	onReference: (nodeId: string) => void
-	onDelete: (node: ImageNode) => void
-	onWorkflowPreset: (node: ImageNode, presetId: WorkflowPresetId) => void
-	onMotionTransfer: () => void
-	onAnnotationChange: (nodeId: string, paths: string[]) => void
-	onAnnotationNoteChange: (nodeId: string, note: string) => void
-	onClearAnnotations: (nodeId: string) => void
-	onAnnotatedEdit: (node: ImageNode) => void
+	onPointerDown(event: ReactPointerEvent<HTMLElement>, node: CanvasNode): void
+	onConnectorPointerDown(event: ReactPointerEvent<HTMLButtonElement>, node: ImageNode): void
+	onPreview(node: ImageNode): void
+	onDownload(node: ImageNode): void
+	onReference(nodeId: string): void
+	onDelete(node: ImageNode): void
+	onWorkflowPreset(node: ImageNode, presetId: WorkflowPresetId): void
+	onMotionTransfer(): void
+	onAnnotationChange(nodeId: string, paths: string[]): void
+	onAnnotationNoteChange(nodeId: string, note: string): void
+	onClearAnnotations(nodeId: string): void
+	onAnnotatedEdit(node: ImageNode): void
 }) {
 	const size = getNodeSize(node)
 	const [draftAnnotationPath, setDraftAnnotationPath] = useState('')
@@ -2548,10 +3019,10 @@ function PromptNodeView({
 	node: PromptNode
 	selected: boolean
 	apiReady: boolean
-	onPointerDown: (event: ReactPointerEvent<HTMLElement>, node: CanvasNode) => void
-	onChange: (nodeId: string, patch: Partial<PromptNode>) => void
-	onGenerate: (event: FormEvent<HTMLFormElement>, node: PromptNode) => void
-	onDelete: (node: PromptNode) => void
+	onPointerDown(event: ReactPointerEvent<HTMLElement>, node: CanvasNode): void
+	onChange(nodeId: string, patch: Partial<PromptNode>): void
+	onGenerate(event: FormEvent<HTMLFormElement>, node: PromptNode): void
+	onDelete(node: PromptNode): void
 }) {
 	const isGenerating = node.status === 'generating'
 	const size = getNodeSize(node)
@@ -2617,6 +3088,230 @@ function PromptNodeView({
 	)
 }
 
+function VideoNodeView({
+	node,
+	sourceImages,
+	selected,
+	arkReady,
+	onPointerDown,
+	onChange,
+	onGenerate,
+	onCancel,
+	onDelete,
+}: {
+	node: VideoNode
+	sourceImages: ImageNode[]
+	selected: boolean
+	arkReady: boolean
+	onPointerDown(event: ReactPointerEvent<HTMLElement>, node: CanvasNode): void
+	onChange(nodeId: string, patch: Partial<VideoNode>): void
+	onGenerate(node: VideoNode): void
+	onCancel(node: VideoNode): void
+	onDelete(node: VideoNode): void
+}) {
+	const size = getNodeSize(node)
+	const isWorking =
+		node.status === 'submitting' || node.status === 'queued' || node.status === 'running'
+	const isFinished =
+		node.status === 'succeeded' ||
+		node.status === 'failed' ||
+		node.status === 'cancelled' ||
+		node.status === 'expired'
+	const [, setNowTick] = useState(0)
+	useEffect(() => {
+		if (!isWorking) return
+		const interval = window.setInterval(() => setNowTick((current) => current + 1), 1000)
+		return () => window.clearInterval(interval)
+	}, [isWorking])
+	const elapsedSeconds =
+		isWorking && node.startedAt ? Math.max(0, Math.round((Date.now() - node.startedAt) / 1000)) : 0
+	const isFastModel = node.model.includes('-fast-')
+	const statusText =
+		node.status === 'submitting'
+			? '提交任务中'
+			: node.status === 'queued'
+				? `排队中 · 已等待 ${elapsedSeconds} 秒`
+				: node.status === 'running'
+					? `生成中 · 已等待 ${elapsedSeconds} 秒`
+					: ''
+
+	return (
+		<form
+			className="tap-node tap-node--video"
+			data-selected={selected}
+			style={{ left: node.x, top: node.y, width: size.w }}
+			onPointerDown={(event) => onPointerDown(event, node)}
+			onSubmit={(event) => {
+				event.preventDefault()
+				onGenerate(node)
+			}}
+		>
+			<header className="tap-node__header">
+				<span>视频生成 · Seedance 2.0</span>
+				<div className="tap-node__header-actions">
+					<strong>{VIDEO_MODE_LABELS[node.mode]}</strong>
+					<button type="button" onClick={() => onDelete(node)} aria-label="删除视频节点">
+						删除
+					</button>
+				</div>
+			</header>
+			{sourceImages.length > 0 && (
+				<div className="tap-video-sources">
+					{sourceImages.map((image, index) => (
+						<span key={image.id} className="tap-video-sources__item">
+							{getVideoSourceRoleLabel(node.mode, index)} · {image.title}
+						</span>
+					))}
+				</div>
+			)}
+			{sourceImages.length === 2 && (
+				<div className="tap-size-group" role="radiogroup" aria-label="双图模式选择">
+					<button
+						type="button"
+						data-selected={node.mode === 'first_last'}
+						onClick={() => onChange(node.id, { mode: 'first_last', errorMessage: null })}
+					>
+						首尾帧
+					</button>
+					<button
+						type="button"
+						data-selected={node.mode === 'reference'}
+						onClick={() => onChange(node.id, { mode: 'reference', errorMessage: null })}
+					>
+						参考图
+					</button>
+				</div>
+			)}
+			<div className="tap-video-params">
+				<label>
+					<span>模型</span>
+					<select
+						value={node.model}
+						onChange={(event) => {
+							const model = event.target.value
+							const patch: Partial<VideoNode> = { model, errorMessage: null }
+							if (model.includes('-fast-') && node.resolution === '1080p') patch.resolution = '720p'
+							onChange(node.id, patch)
+						}}
+					>
+						{VIDEO_MODELS.map((model) => (
+							<option key={model.id} value={model.id}>
+								{model.label}
+							</option>
+						))}
+					</select>
+				</label>
+				<label>
+					<span>分辨率</span>
+					<select
+						value={node.resolution}
+						onChange={(event) =>
+							onChange(node.id, {
+								resolution: event.target.value as VideoResolution,
+								errorMessage: null,
+							})
+						}
+					>
+						{VIDEO_RESOLUTION_OPTIONS.map((resolution) => (
+							<option
+								key={resolution}
+								value={resolution}
+								disabled={isFastModel && resolution === '1080p'}
+							>
+								{resolution}
+								{isFastModel && resolution === '1080p' ? '（快速版不支持）' : ''}
+							</option>
+						))}
+					</select>
+				</label>
+				<label>
+					<span>画幅比例</span>
+					<select
+						value={node.ratio}
+						onChange={(event) =>
+							onChange(node.id, { ratio: event.target.value as VideoRatio, errorMessage: null })
+						}
+					>
+						{VIDEO_RATIO_OPTIONS.map((ratio) => (
+							<option key={ratio} value={ratio}>
+								{ratio === 'adaptive' ? '自适应' : ratio}
+							</option>
+						))}
+					</select>
+				</label>
+				<label>
+					<span>时长</span>
+					<select
+						value={String(node.duration)}
+						onChange={(event) =>
+							onChange(node.id, { duration: Number(event.target.value), errorMessage: null })
+						}
+					>
+						{VIDEO_DURATION_OPTIONS.map((option) => (
+							<option key={option.value} value={String(option.value)}>
+								{option.label}
+							</option>
+						))}
+					</select>
+				</label>
+			</div>
+			<label className="tap-video-audio">
+				<input
+					type="checkbox"
+					checked={node.generateAudio}
+					onChange={(event) =>
+						onChange(node.id, { generateAudio: event.target.checked, errorMessage: null })
+					}
+				/>
+				<span>生成原生音频</span>
+			</label>
+			<label className="tap-prompt-field">
+				<span>视频提示词</span>
+				<textarea
+					value={node.prompt}
+					onChange={(event) =>
+						onChange(node.id, { prompt: event.target.value, errorMessage: null })
+					}
+					placeholder="描述画面、动作与镜头，例如：女孩睁开眼温柔看向镜头，镜头缓慢推近"
+					rows={4}
+				/>
+			</label>
+			{node.status === 'succeeded' && node.videoUrl ? (
+				<div className="tap-video-frame">
+					<video src={node.videoUrl} controls preload="metadata" />
+				</div>
+			) : null}
+			{statusText ? <div className="tap-video-status">{statusText}</div> : null}
+			{node.errorMessage && node.status !== 'succeeded' ? (
+				<div className="tap-node__error">{node.errorMessage}</div>
+			) : null}
+			{node.errorMessage && node.status === 'succeeded' ? (
+				<div className="tap-video-warning">{node.errorMessage}</div>
+			) : null}
+			<div className="tap-video-actions">
+				{isWorking && node.taskId ? (
+					<button type="button" onClick={() => onCancel(node)}>
+						取消任务
+					</button>
+				) : null}
+				<button
+					className="tap-generate-button"
+					type="submit"
+					disabled={isWorking || !node.prompt.trim() || !arkReady}
+				>
+					{isWorking
+						? '生成中'
+						: arkReady
+							? isFinished
+								? '重新生成'
+								: '生成视频'
+							: 'ARK 接口未配置'}
+				</button>
+			</div>
+		</form>
+	)
+}
+
 function TextNodeView({
 	node,
 	selected,
@@ -2626,9 +3321,9 @@ function TextNodeView({
 }: {
 	node: TextNode
 	selected: boolean
-	onPointerDown: (event: ReactPointerEvent<HTMLElement>, node: CanvasNode) => void
-	onChange: (nodeId: string, patch: Partial<TextNode>) => void
-	onDelete: (node: TextNode) => void
+	onPointerDown(event: ReactPointerEvent<HTMLElement>, node: CanvasNode): void
+	onChange(nodeId: string, patch: Partial<TextNode>): void
+	onDelete(node: TextNode): void
 }) {
 	const size = getNodeSize(node)
 	return (
@@ -2669,9 +3364,9 @@ function DoodleNodeView({
 }: {
 	node: DoodleNode
 	selected: boolean
-	onPointerDown: (event: ReactPointerEvent<HTMLElement>, node: CanvasNode) => void
-	onChange: (nodeId: string, patch: Partial<DoodleNode>) => void
-	onDelete: (node: DoodleNode) => void
+	onPointerDown(event: ReactPointerEvent<HTMLElement>, node: CanvasNode): void
+	onChange(nodeId: string, patch: Partial<DoodleNode>): void
+	onDelete(node: DoodleNode): void
 }) {
 	const size = getNodeSize(node)
 	const stageWidth = Math.max(160, size.w - 24)
@@ -2758,8 +3453,8 @@ function PromptLibraryPanel({
 }: {
 	presets: PromptLibraryPreset[]
 	extensionUrl: string
-	onApplyPreset: (preset: PromptLibraryPreset) => void
-	onClose: () => void
+	onApplyPreset(preset: PromptLibraryPreset): void
+	onClose(): void
 }) {
 	return (
 		<aside className="tap-prompt-library" onPointerDown={(event) => event.stopPropagation()}>
@@ -2774,7 +3469,9 @@ function PromptLibraryPanel({
 			</header>
 			<div className="tap-prompt-library__detail">
 				<strong>使用方式</strong>
-				<p>点击「使用」会优先插入当前提示词节点；如果没有选中提示词，会根据当前选中图片创建新的工作流节点。</p>
+				<p>
+					点击「使用」会优先插入当前提示词节点；如果没有选中提示词，会根据当前选中图片创建新的工作流节点。
+				</p>
 				<a href={extensionUrl} target="_blank" rel="noreferrer">
 					查看 Chrome Web Store 详情
 				</a>
@@ -2814,17 +3511,21 @@ function ApiKeyPanel({
 	baseUrlInput: string
 	saving: boolean
 	error: string | null
-	onApiKeyInputChange: (value: string) => void
-	onBaseUrlInputChange: (value: string) => void
-	onClose: () => void
-	onSubmit: (event: FormEvent<HTMLFormElement>) => void
+	onApiKeyInputChange(value: string): void
+	onBaseUrlInputChange(value: string): void
+	onClose(): void
+	onSubmit(event: FormEvent<HTMLFormElement>): void
 }) {
 	return (
 		<section className="tap-api-key-panel" onPointerDown={(event) => event.stopPropagation()}>
 			<header>
 				<div>
 					<h2>接口配置</h2>
-					<p>{apiStatus === 'ready' ? '当前接口已连接，可在这里替换密钥。' : '输入你自己的 API 密钥后即可使用图片生成与 Agent。'}</p>
+					<p>
+						{apiStatus === 'ready'
+							? '当前接口已连接，可在这里替换密钥。'
+							: '输入你自己的 API 密钥后即可使用图片生成与 Agent。'}
+					</p>
 				</div>
 				<button type="button" onClick={onClose} aria-label="关闭接口配置">
 					x
@@ -2870,12 +3571,15 @@ function ImagePreviewOverlay({
 	onDownload,
 }: {
 	node: ImageNode
-	onClose: () => void
-	onDownload: (node: ImageNode) => void
+	onClose(): void
+	onDownload(node: ImageNode): void
 }) {
 	return (
 		<div className="tap-image-preview" role="dialog" aria-modal="true" onPointerDown={onClose}>
-			<section className="tap-image-preview__surface" onPointerDown={(event) => event.stopPropagation()}>
+			<section
+				className="tap-image-preview__surface"
+				onPointerDown={(event) => event.stopPropagation()}
+			>
 				<header>
 					<div>
 						<span>{node.prompt ? '生成图片' : '图片预览'}</span>
@@ -2932,11 +3636,11 @@ function AgentPanel({
 	activeTextModel: string
 	referenceImages: ImageNode[]
 	selectedCount: number
-	onInputChange: (value: string) => void
-	onRemoveReferenceImage: (nodeId: string) => void
-	onAutoGenerateChange: (value: boolean) => void
-	onTextModelChange: (value: string) => void
-	onSubmit: (event: FormEvent<HTMLFormElement>) => void
+	onInputChange(value: string): void
+	onRemoveReferenceImage(nodeId: string): void
+	onAutoGenerateChange(value: boolean): void
+	onTextModelChange(value: string): void
+	onSubmit(event: FormEvent<HTMLFormElement>): void
 }) {
 	const threadRef = useRef<HTMLDivElement | null>(null)
 
@@ -2953,15 +3657,25 @@ function AgentPanel({
 					<h2>Agent 创作助手</h2>
 					<p>{selectedCount ? `已读取 ${selectedCount} 个选中节点` : '读取整张画布上下文'}</p>
 				</div>
-				<div className="tap-agent-panel__badge" data-state={busy ? 'thinking' : apiReady ? 'ready' : 'missing'}>
+				<div
+					className="tap-agent-panel__badge"
+					data-state={busy ? 'thinking' : apiReady ? 'ready' : 'missing'}
+				>
 					{busy ? '思考中' : apiReady ? '可生成' : '未配置'}
 				</div>
 			</header>
 
 			<div ref={threadRef} className="tap-agent-thread" aria-live="polite">
 				{messages.map((message) => (
-					<div key={message.id} className="tap-agent-message" data-role={message.role} data-status={message.status}>
-						<div className="tap-agent-message__role">{message.role === 'user' ? '你' : 'Agent'}</div>
+					<div
+						key={message.id}
+						className="tap-agent-message"
+						data-role={message.role}
+						data-status={message.status}
+					>
+						<div className="tap-agent-message__role">
+							{message.role === 'user' ? '你' : 'Agent'}
+						</div>
 						<div className="tap-agent-message__body">
 							<p>{message.content}</p>
 							{message.references?.length ? (
@@ -3022,7 +3736,11 @@ function AgentPanel({
 											{reference.naturalWidth}x{reference.naturalHeight}
 										</span>
 									</div>
-									<button type="button" onClick={() => onRemoveReferenceImage(reference.id)} title={`移除 ${reference.title}`}>
+									<button
+										type="button"
+										onClick={() => onRemoveReferenceImage(reference.id)}
+										title={`移除 ${reference.title}`}
+									>
 										x
 									</button>
 								</article>
@@ -3061,7 +3779,10 @@ function AgentPanel({
 						<span>自动生成图片</span>
 					</label>
 				</div>
-				<button type="submit" disabled={(!input.trim() && !referenceImages.length) || busy || !apiReady}>
+				<button
+					type="submit"
+					disabled={(!input.trim() && !referenceImages.length) || busy || !apiReady}
+				>
 					{busy ? 'Agent 思考中' : apiReady ? '发送给 Agent' : '接口未配置'}
 				</button>
 			</form>
@@ -3079,8 +3800,8 @@ function HistoryGallery({
 	items: HistoryItem[]
 	totalCount: number
 	search: string
-	onSearchChange: (value: string) => void
-	onAddToCanvas: (item: HistoryItem) => void
+	onSearchChange(value: string): void
+	onAddToCanvas(item: HistoryItem): void
 }) {
 	return (
 		<aside className="tap-history-panel" onPointerDown={(event) => event.stopPropagation()}>
@@ -3283,9 +4004,13 @@ function createClientFallbackImagePrompt(
 		? `参考 ${references} 的主体风格、构图、比例、材质细节与整体视觉气质。`
 		: ''
 	const count = inferGenerationCountFromText(request)
-	const countText =
-		count > 1 ? `生成 ${count} 张彼此独立的图片，不要拼图、网格、分屏或合集。` : ''
-	return [referenceText, request, countText, '画面完整清晰，细节精致，不添加文字、水印、边框或 UI 元素。']
+	const countText = count > 1 ? `生成 ${count} 张彼此独立的图片，不要拼图、网格、分屏或合集。` : ''
+	return [
+		referenceText,
+		request,
+		countText,
+		'画面完整清晰，细节精致，不添加文字、水印、边框或 UI 元素。',
+	]
 		.filter(Boolean)
 		.join(' ')
 }
@@ -3302,7 +4027,8 @@ function normalizeGeneratedImageUrls(data: GeneratedImageResponse) {
 function inferImageMimeType(imageUrl: string) {
 	const dataUrlMatch = imageUrl.match(/^data:([^;,]+)/)
 	if (dataUrlMatch?.[1]) return dataUrlMatch[1]
-	if (imageUrl.toLowerCase().includes('.jpg') || imageUrl.toLowerCase().includes('.jpeg')) return 'image/jpeg'
+	if (imageUrl.toLowerCase().includes('.jpg') || imageUrl.toLowerCase().includes('.jpeg'))
+		return 'image/jpeg'
 	if (imageUrl.toLowerCase().includes('.webp')) return 'image/webp'
 	return 'image/png'
 }
@@ -3387,17 +4113,25 @@ function normalizePersistedCanvasState(state: PersistedCanvasState): PersistedCa
 				.filter(
 					(node) =>
 						node &&
-						(node.type === 'image' || node.type === 'prompt' || node.type === 'text' || node.type === 'doodle')
+						(node.type === 'image' ||
+							node.type === 'prompt' ||
+							node.type === 'text' ||
+							node.type === 'doodle' ||
+							node.type === 'video')
 				)
-				.map((node) =>
-					node.type === 'prompt'
-						? ({
-								...node,
-								prompt: replaceLegacyImageReferenceText((node as PromptNode).prompt),
-								count: normalizeGenerationCount((node as PromptNode).count),
-							} as PromptNode)
-						: (node as CanvasNode)
-				)
+				.map((node) => {
+					if (node.type === 'prompt') {
+						return {
+							...node,
+							prompt: replaceLegacyImageReferenceText((node as PromptNode).prompt),
+							count: normalizeGenerationCount((node as PromptNode).count),
+						} as PromptNode
+					}
+					if (node.type === 'video') {
+						return normalizeLoadedVideoNode(node as VideoNode)
+					}
+					return node as CanvasNode
+				})
 		: createInitialNodes()
 	const nodes = normalizeCanvasNodeDisplayLayout(baseNodes) || baseNodes
 	const nodeIds = new Set(nodes.map((node) => node.id))
@@ -3410,30 +4144,60 @@ function normalizePersistedCanvasState(state: PersistedCanvasState): PersistedCa
 		edges,
 		transform: isValidTransform(state.transform) ? state.transform : { x: 96, y: 108, zoom: 0.56 },
 		historyItems: Array.isArray(state.historyItems)
-			? state.historyItems.filter(isValidHistoryItem).map(normalizeHistoryItemDisplaySize).slice(0, HISTORY_LIMIT)
+			? state.historyItems
+					.filter(isValidHistoryItem)
+					.map(normalizeHistoryItemDisplaySize)
+					.slice(0, HISTORY_LIMIT)
 			: [],
 		nodeCounter: Number(state.nodeCounter) || 10,
 		edgeCounter: Number(state.edgeCounter) || 10,
 	}
 }
 
+function normalizeLoadedVideoNode(node: VideoNode): VideoNode {
+	let status: VideoNodeStatus = node.status || 'idle'
+	if (status === 'submitting') status = 'idle'
+	if ((status === 'queued' || status === 'running') && !node.taskId) status = 'idle'
+	if (status === 'succeeded' && !node.videoUrl) status = 'idle'
+	return {
+		...node,
+		prompt: node.prompt || '',
+		mode: VIDEO_MODE_LABELS[node.mode] ? node.mode : 'text',
+		sourceImageIds: Array.isArray(node.sourceImageIds) ? node.sourceImageIds : [],
+		model: VIDEO_MODELS.some((model) => model.id === node.model) ? node.model : VIDEO_MODELS[0].id,
+		resolution: VIDEO_RESOLUTION_OPTIONS.includes(node.resolution) ? node.resolution : '720p',
+		ratio: VIDEO_RATIO_OPTIONS.includes(node.ratio) ? node.ratio : 'adaptive',
+		duration: VIDEO_DURATION_OPTIONS.some((option) => option.value === node.duration)
+			? node.duration
+			: 5,
+		generateAudio: node.generateAudio !== false,
+		status,
+		taskId: node.taskId || null,
+		videoUrl: node.videoUrl || null,
+		errorMessage: node.errorMessage || null,
+		startedAt: node.startedAt || null,
+		width: VIDEO_NODE_WIDTH,
+		height: VIDEO_NODE_BASE_HEIGHT,
+	}
+}
+
 function isValidTransform(value: unknown): value is TransformState {
 	return Boolean(
 		value &&
-			typeof value === 'object' &&
-			Number.isFinite((value as TransformState).x) &&
-			Number.isFinite((value as TransformState).y) &&
-			Number.isFinite((value as TransformState).zoom)
+		typeof value === 'object' &&
+		Number.isFinite((value as TransformState).x) &&
+		Number.isFinite((value as TransformState).y) &&
+		Number.isFinite((value as TransformState).zoom)
 	)
 }
 
 function isValidHistoryItem(value: unknown): value is HistoryItem {
 	return Boolean(
 		value &&
-			typeof value === 'object' &&
-			typeof (value as HistoryItem).id === 'string' &&
-			typeof (value as HistoryItem).imageUrl === 'string' &&
-			typeof (value as HistoryItem).createdAt === 'string'
+		typeof value === 'object' &&
+		typeof (value as HistoryItem).id === 'string' &&
+		typeof (value as HistoryItem).imageUrl === 'string' &&
+		typeof (value as HistoryItem).createdAt === 'string'
 	)
 }
 
@@ -3455,8 +4219,12 @@ function normalizeCanvasNodeDisplayLayout(nodes: CanvasNode[]) {
 }
 
 function normalizeImageNodeDisplaySize(node: ImageNode): ImageNode {
-	const display = getTrueDisplaySize(node.naturalWidth || node.displayWidth, node.naturalHeight || node.displayHeight)
-	if (Math.abs(node.displayWidth - display.w) <= 1 && Math.abs(node.displayHeight - display.h) <= 1) return node
+	const display = getTrueDisplaySize(
+		node.naturalWidth || node.displayWidth,
+		node.naturalHeight || node.displayHeight
+	)
+	if (Math.abs(node.displayWidth - display.w) <= 1 && Math.abs(node.displayHeight - display.h) <= 1)
+		return node
 	return {
 		...node,
 		displayWidth: display.w,
@@ -3470,7 +4238,10 @@ function normalizePromptNodeDisplaySize(node: PromptNode, nodes: CanvasNode[]): 
 	const source = nodes.find((item): item is ImageNode => item.id === sourceId && isImageNode(item))
 	if (!source) return node
 	const matchedSize = getAdaptivePromptNodeSize(source)
-	if (Math.abs((node.width || 0) - matchedSize.w) <= 1 && Math.abs((node.height || 0) - matchedSize.h) <= 1) {
+	if (
+		Math.abs((node.width || 0) - matchedSize.w) <= 1 &&
+		Math.abs((node.height || 0) - matchedSize.h) <= 1
+	) {
 		return node
 	}
 	return {
@@ -3481,8 +4252,12 @@ function normalizePromptNodeDisplaySize(node: PromptNode, nodes: CanvasNode[]): 
 }
 
 function normalizeHistoryItemDisplaySize(item: HistoryItem): HistoryItem {
-	const display = getTrueDisplaySize(item.naturalWidth || item.displayWidth, item.naturalHeight || item.displayHeight)
-	if (Math.abs(item.displayWidth - display.w) <= 1 && Math.abs(item.displayHeight - display.h) <= 1) return item
+	const display = getTrueDisplaySize(
+		item.naturalWidth || item.displayWidth,
+		item.naturalHeight || item.displayHeight
+	)
+	if (Math.abs(item.displayWidth - display.w) <= 1 && Math.abs(item.displayHeight - display.h) <= 1)
+		return item
 	return {
 		...item,
 		displayWidth: display.w,
@@ -3576,11 +4351,17 @@ function buildCanvasSummary(
 	const selected = new Set(selectedNodeIds)
 	const referenced = new Set(referenceImageIds)
 	const nodeLines = nodes.slice(-12).map((node) => {
-		const markers = [selected.has(node.id) ? '已选中' : '未选中', referenced.has(node.id) ? '已引用' : '未引用']
+		const markers = [
+			selected.has(node.id) ? '已选中' : '未选中',
+			referenced.has(node.id) ? '已引用' : '未引用',
+		]
 		if (isImageNode(node)) {
 			return `图片节点 ${createAgentImageReferenceLabel(node)}（${markers.join('，')}）：${node.title}，文件 ${node.fileName}${node.prompt ? `，来源提示词：${node.prompt}` : ''}`
 		}
-		return `提示词节点 ${node.id}（${markers.join('，')}）：尺寸 ${node.size}，数量 ${normalizeGenerationCount(node.count)} 张，状态 ${node.status}，提示词：${node.prompt || '空'}`
+		if (isVideoNode(node)) {
+			return `视频节点 ${node.id}（${markers.join('，')}）：模式 ${VIDEO_MODE_LABELS[node.mode]}，状态 ${node.status}，提示词：${node.prompt || '空'}`
+		}
+		return `提示词节点 ${node.id}（${markers.join('，')}）：尺寸 ${(node as PromptNode).size}，数量 ${normalizeGenerationCount((node as PromptNode).count)} 张，状态 ${(node as PromptNode).status}，提示词：${(node as PromptNode).prompt || '空'}`
 	})
 	const edgeLines = edges.slice(-12).map((edge) => `${edge.from} -> ${edge.to}`)
 	const imageParameterLabels = nodes.filter(isImageNode).map(createAgentImageReferenceLabel)
@@ -3604,11 +4385,12 @@ async function checkApiStatus() {
 		const data = (await response.json()) as ApiStatusResponse
 		return {
 			configured: Boolean(response.ok && data.configured),
+			arkConfigured: Boolean(response.ok && data.arkConfigured),
 			baseUrl: data.baseUrl || '',
 			imageApiUrl: data.imageApiUrl || '',
 		}
 	} catch {
-		return { configured: false, baseUrl: '', imageApiUrl: '' }
+		return { configured: false, arkConfigured: false, baseUrl: '', imageApiUrl: '' }
 	}
 }
 
@@ -3628,6 +4410,56 @@ function isDoodleNode(node: CanvasNode): node is DoodleNode {
 	return node.type === 'doodle'
 }
 
+function isVideoNode(node: CanvasNode): node is VideoNode {
+	return node.type === 'video'
+}
+
+function getVideoSourceImages(node: VideoNode, nodes: CanvasNode[]) {
+	return node.sourceImageIds
+		.map((id) => nodes.find((item) => item.id === id))
+		.filter((item): item is ImageNode => Boolean(item && isImageNode(item)))
+}
+
+function buildVideoImageInputs(mode: VideoGenerationMode, sourceNodes: ImageNode[]) {
+	if (mode === 'text' || !sourceNodes.length) return []
+	if (mode === 'first_frame') {
+		return [{ url: sourceNodes[0].imageUrl, role: 'first_frame' }]
+	}
+	if (mode === 'first_last') {
+		return [
+			{ url: sourceNodes[0].imageUrl, role: 'first_frame' },
+			{ url: sourceNodes[1].imageUrl, role: 'last_frame' },
+		]
+	}
+	return sourceNodes.slice(0, MAX_VIDEO_REFERENCE_IMAGES).map((node) => ({
+		url: node.imageUrl,
+		role: 'reference_image',
+	}))
+}
+
+function estimateDataUrlBytes(url: string) {
+	if (!url.startsWith('data:')) return 0
+	const base64 = url.slice(url.indexOf(',') + 1)
+	return Math.floor((base64.length * 3) / 4)
+}
+
+function validateVideoImageSizes(urls: string[]) {
+	let total = 0
+	for (const url of urls) {
+		const bytes = estimateDataUrlBytes(url)
+		if (bytes > MAX_VIDEO_IMAGE_BYTES) return '单张参考图超过 30MB，请压缩后重试。'
+		total += bytes
+	}
+	if (total > MAX_VIDEO_TOTAL_IMAGE_BYTES) return '参考图总大小超过 60MB，请减少图片数量或压缩。'
+	return ''
+}
+
+function getVideoSourceRoleLabel(mode: VideoGenerationMode, index: number) {
+	if (mode === 'first_frame') return '首帧'
+	if (mode === 'first_last') return index === 0 ? '首帧' : '尾帧'
+	return `参考图${index + 1}`
+}
+
 function getNodeSize(node: CanvasNode) {
 	if (isImageNode(node)) {
 		return {
@@ -3645,6 +4477,18 @@ function getNodeSize(node: CanvasNode) {
 		return {
 			w: Math.max(MIN_IMAGE_NODE_WIDTH, node.width || PROMPT_NODE_WIDTH),
 			h: Math.max(PROMPT_NODE_MIN_HEIGHT, node.height || PROMPT_NODE_HEIGHT),
+		}
+	}
+	if (isVideoNode(node)) {
+		const baseHeight = node.sourceImageIds.length
+			? VIDEO_NODE_BASE_HEIGHT + 40
+			: VIDEO_NODE_BASE_HEIGHT
+		return {
+			w: VIDEO_NODE_WIDTH,
+			h:
+				node.status === 'succeeded' && node.videoUrl
+					? baseHeight + VIDEO_PLAYER_HEIGHT
+					: baseHeight,
 		}
 	}
 	if (isTextNode(node) || isDoodleNode(node)) {
@@ -3713,7 +4557,11 @@ function rectsIntersect(a: Rect, b: Rect) {
 function getTrueDisplaySize(width: number, height: number) {
 	const safeWidth = Math.max(1, width)
 	const safeHeight = Math.max(1, height)
-	let scale = Math.min(1, MAX_IMAGE_DISPLAY_WIDTH / safeWidth, MAX_IMAGE_DISPLAY_HEIGHT / safeHeight)
+	let scale = Math.min(
+		1,
+		MAX_IMAGE_DISPLAY_WIDTH / safeWidth,
+		MAX_IMAGE_DISPLAY_HEIGHT / safeHeight
+	)
 	let displayWidth = Math.max(1, Math.round(safeWidth * scale))
 	let displayHeight = Math.max(1, Math.round(safeHeight * scale))
 
@@ -3738,9 +4586,10 @@ function getTrueDisplaySize(width: number, height: number) {
 function pointsToSvgPath(points: Point[]) {
 	if (!points.length) return ''
 	const [first, ...rest] = points
-	return [`M ${first.x.toFixed(1)} ${first.y.toFixed(1)}`, ...rest.map((point) => `L ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)].join(
-		' '
-	)
+	return [
+		`M ${first.x.toFixed(1)} ${first.y.toFixed(1)}`,
+		...rest.map((point) => `L ${point.x.toFixed(1)} ${point.y.toFixed(1)}`),
+	].join(' ')
 }
 
 function parseApiSize(size: string) {
@@ -3811,7 +4660,10 @@ async function fitImageToTargetCanvas(imageUrl: string, target: { w: number; h: 
 		if (!context) throw new Error('Canvas is unavailable.')
 		context.fillStyle = '#ffffff'
 		context.fillRect(0, 0, target.w, target.h)
-		const scale = Math.min(target.w / Math.max(1, image.naturalWidth), target.h / Math.max(1, image.naturalHeight))
+		const scale = Math.min(
+			target.w / Math.max(1, image.naturalWidth),
+			target.h / Math.max(1, image.naturalHeight)
+		)
 		const width = image.naturalWidth * scale
 		const height = image.naturalHeight * scale
 		context.drawImage(image, (target.w - width) / 2, (target.h - height) / 2, width, height)
@@ -3838,7 +4690,10 @@ async function createGenerationSourceImageUrl(node: ImageNode) {
 		if (!context) throw new Error('Canvas is unavailable.')
 		context.drawImage(image, 0, 0, canvas.width, canvas.height)
 		context.save()
-		context.scale(canvas.width / Math.max(1, node.displayWidth), canvas.height / Math.max(1, node.displayHeight))
+		context.scale(
+			canvas.width / Math.max(1, node.displayWidth),
+			canvas.height / Math.max(1, node.displayHeight)
+		)
 		context.lineCap = 'round'
 		context.lineJoin = 'round'
 		context.strokeStyle = '#ff2f1f'
@@ -3899,13 +4754,20 @@ function sanitizeFileName(value: string) {
 }
 
 function hasImageFiles(dataTransfer: DataTransfer) {
-	return Array.from(dataTransfer.items).some((item) => item.kind === 'file' && item.type.startsWith('image/'))
+	return Array.from(dataTransfer.items).some(
+		(item) => item.kind === 'file' && item.type.startsWith('image/')
+	)
 }
 
 function isTextEditingElement(element: Element | null) {
 	if (!element) return false
 	const tagName = element.tagName.toLowerCase()
-	return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || element.hasAttribute('contenteditable')
+	return (
+		tagName === 'input' ||
+		tagName === 'textarea' ||
+		tagName === 'select' ||
+		element.hasAttribute('contenteditable')
+	)
 }
 
 function makeStarterImageDataUrl() {
