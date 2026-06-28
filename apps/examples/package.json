@@ -57,6 +57,7 @@
 		"ag-grid-react": "^32.3.3",
 		"axe-core": "^4.10.3",
 		"classnames": "^2.5.1",
+		"cos-nodejs-sdk-v5": "^2.15.4",
 		"d3-geo": "^3.1.1",
 		"lazyrepo": "0.0.0-alpha.27",
 		"lodash": "^4.17.21",

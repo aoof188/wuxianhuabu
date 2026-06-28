@@ -319,10 +319,18 @@ const MAX_VIDEO_IMAGE_BYTES = 30 * 1024 * 1024
 const MAX_VIDEO_TOTAL_IMAGE_BYTES = 60 * 1024 * 1024
 
 const VIDEO_MODELS: ModelOption[] = [
-	{ id: 'doubao-seedance-2-0-260128', label: 'Seedance 2.0 标准版' },
-	{ id: 'doubao-seedance-2-0-fast-260128', label: 'Seedance 2.0 快速版' },
+	{ id: 'seedance-2.0-t2v', label: 'Seedance 2.0 文生视频' },
+	{ id: 'seedance-2.0-i2v', label: 'Seedance 2.0 图生视频' },
+	{ id: 'seedance-2.0-r2v', label: 'Seedance 2.0 参考图视频' },
+	{ id: 'seedance-2.0-fast-t2v', label: 'Seedance 2.0 Fast 文生视频' },
+	{ id: 'seedance-2.0-fast-i2v', label: 'Seedance 2.0 Fast 图生视频' },
+	{ id: 'seedance-2.0-fast-r2v', label: 'Seedance 2.0 Fast 参考图视频' },
+	{ id: 'veo3-1-fast', label: 'Veo 3.1 Fast' },
+	{ id: 'veo3-1-fast-4k', label: 'Veo 3.1 Fast 4K' },
+	{ id: 'grok-imagine-t2v', label: 'Grok Imagine 文生视频' },
+	{ id: 'grok-imagine-i2v', label: 'Grok Imagine 图生视频' },
 ]
-const VIDEO_RESOLUTION_OPTIONS: VideoResolution[] = ['480p', '720p', '1080p']
+const VIDEO_RESOLUTION_OPTIONS: VideoResolution[] = ['480p', '720p']
 const VIDEO_RATIO_OPTIONS: VideoRatio[] = ['adaptive', '16:9', '9:16', '1:1', '4:3', '3:4', '21:9']
 const VIDEO_DURATION_OPTIONS: Array<{ value: number; label: string }> = [
 	{ value: -1, label: '自适应' },
@@ -341,6 +349,8 @@ const VIDEO_MODE_LABELS: Record<VideoGenerationMode, string> = {
 
 const DEFAULT_IMAGE_MODELS: ModelOption[] = [
 	{ id: 'gpt-image-2', label: 'gpt-image-2' },
+	{ id: 'seedream-v4.5', label: 'Seedream V4.5' },
+	{ id: 'seedream-5.0-lite', label: 'Seedream 5.0 Lite' },
 	{ id: 'nanobanana', label: 'nanobanana' },
 	{ id: 'nanobanana-pro', label: 'nanobanana-pro' },
 	{ id: 'nanobanana-2', label: 'nanobanana-2' },
@@ -1652,7 +1662,7 @@ export default function AiCanvasAgentExample() {
 		event.preventDefault()
 		const arkApiKey = arkKeyInput.trim()
 		if (!arkApiKey) {
-			setModelError('请输入火山引擎 ARK API Key')
+			setModelError('请输入 APIPod API Key')
 			return
 		}
 		setArkKeySaving(true)
@@ -1664,13 +1674,13 @@ export default function AiCanvasAgentExample() {
 				body: JSON.stringify({ arkApiKey }),
 			})
 			const data = (await response.json()) as { error?: string }
-			if (!response.ok) throw new Error(data.error || 'ARK Key 保存失败')
+			if (!response.ok) throw new Error(data.error || 'APIPod Key 保存失败')
 			setArkKeyInput('')
 			setArkStatus('ready')
 			setApiRefreshNonce((current) => current + 1)
-			setCanvasNotice('火山引擎 ARK Key 已保存，可以生成视频了')
+			setCanvasNotice('APIPod Key 已保存，可以生成图片和视频了')
 		} catch (err) {
-			setModelError(err instanceof Error ? err.message : 'ARK Key 保存失败')
+			setModelError(err instanceof Error ? err.message : 'APIPod Key 保存失败')
 		} finally {
 			setArkKeySaving(false)
 		}
@@ -1680,7 +1690,7 @@ export default function AiCanvasAgentExample() {
 		if (arkStatus !== 'ready') {
 			updateVideoNode(videoNode.id, {
 				status: 'failed',
-				errorMessage: '未配置火山引擎 ARK API Key，请点击顶部「检查接口」填写。',
+				errorMessage: '未配置 APIPod API Key，请点击顶部「检查接口」填写。',
 			})
 			return
 		}
@@ -1732,6 +1742,7 @@ export default function AiCanvasAgentExample() {
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					model: videoNode.model,
+					mode: videoNode.mode,
 					prompt,
 					images,
 					resolution: videoNode.resolution,
@@ -3290,7 +3301,7 @@ function VideoNodeView({
 			}}
 		>
 			<header className="tap-node__header">
-				<span>视频生成 · Seedance 2.0</span>
+				<span>视频生成 · APIPod</span>
 				<div className="tap-node__header-actions">
 					<strong>{VIDEO_MODE_LABELS[node.mode]}</strong>
 					<button type="button" onClick={() => onDelete(node)} aria-label="删除视频节点">
@@ -3450,7 +3461,7 @@ function VideoNodeView({
 							? isFinished
 								? '重新生成'
 								: '生成视频'
-							: 'ARK 接口未配置'}
+							: 'APIPod 未配置'}
 				</button>
 			</div>
 		</form>
@@ -3679,7 +3690,7 @@ function ApiKeyPanel({
 					<p>
 						{apiStatus === 'ready'
 							? '当前接口已连接，可在这里替换密钥。'
-							: '输入你自己的 API 密钥后即可使用图片生成与 Agent。'}
+							: '输入 APIPod API 密钥后即可使用图片生成、视频生成与 Agent。'}
 					</p>
 				</div>
 				<button type="button" onClick={onClose} aria-label="关闭接口配置">
@@ -3693,7 +3704,7 @@ function ApiKeyPanel({
 						type="password"
 						value={apiKeyInput}
 						onChange={(event) => onApiKeyInputChange(event.target.value)}
-						placeholder="例如 sk-... 或你的 OpenAI-compatible 网关密钥"
+						placeholder="例如 sk-... 或你的 APIPod API Key"
 						autoComplete="off"
 					/>
 				</label>
@@ -3702,7 +3713,7 @@ function ApiKeyPanel({
 					<input
 						value={baseUrlInput}
 						onChange={(event) => onBaseUrlInputChange(event.target.value)}
-						placeholder="默认 https://api.openai.com，可填自定义 /v1 网关"
+						placeholder="默认 https://api.apipod.ai，可填自定义 /v1 网关"
 						autoComplete="off"
 					/>
 				</label>
@@ -3718,21 +3729,21 @@ function ApiKeyPanel({
 			</form>
 			<form onSubmit={onArkSubmit} className="tap-api-key-panel__ark">
 				<label>
-					<span>火山引擎 ARK API Key（Seedance 视频生成）</span>
+					<span>APIPod API Key（视频生成，可与上方相同）</span>
 					<input
 						type="password"
 						value={arkKeyInput}
 						onChange={(event) => onArkKeyInputChange(event.target.value)}
-						placeholder="火山方舟控制台创建的 API Key"
+						placeholder="APIPod API Key"
 						autoComplete="off"
 					/>
 				</label>
 				<div className="tap-api-key-panel__actions">
 					<span className="tap-api-key-panel__ark-status" data-state={arkStatus}>
-						{arkStatus === 'ready' ? 'ARK 已配置' : 'ARK 未配置'}
+						{arkStatus === 'ready' ? 'APIPod 已配置' : 'APIPod 未配置'}
 					</span>
 					<button type="submit" disabled={arkSaving || !arkKeyInput.trim()}>
-						{arkSaving ? '保存中' : '保存 ARK Key'}
+						{arkSaving ? '保存中' : '保存 APIPod Key'}
 					</button>
 				</div>
 			</form>

@@ -1,0 +1,30 @@
+services:
+  wuxianhuabu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wuxianhuabu:latest
+    container_name: wuxianhuabu
+    restart: unless-stopped
+    ports:
+      - "${WUXIANHUABU_PORT:-5420}:5420"
+    environment:
+      NODE_ENV: production
+      APIPOD_API_KEY: ${APIPOD_API_KEY:-}
+      APIPOD_BASE_URL: ${APIPOD_BASE_URL:-https://api.apipod.ai}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-}
+      COS_PUBLIC_BASE_URL: ${COS_PUBLIC_BASE_URL:-}
+      COS_KEY_PREFIX: ${COS_KEY_PREFIX:-ai-canvas}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:5420').then((res)=>process.exit(res.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

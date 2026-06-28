@@ -11,11 +11,14 @@ import {
 	writeFileSync,
 } from 'fs'
 import type { ServerResponse } from 'http'
+import { createRequire } from 'module'
 import path from 'path'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
 import react from '@vitejs/plugin-react'
 import { Plugin, PluginOption, defineConfig, loadEnv } from 'vite'
+
+const require = createRequire(import.meta.url)
 
 /**
  * Plugin to enable SPA fallback for vite preview.
@@ -59,18 +62,46 @@ function getEnv() {
 }
 
 const env = getEnv()
-const DEFAULT_AI_BASE_URL = 'https://api.openai.com'
+const DEFAULT_AI_BASE_URL = 'https://api.apipod.ai'
 const DEFAULT_TEXT_MODEL = 'gpt-5.5'
 const DEFAULT_IMAGE_MODEL = 'gpt-image-2'
 const TEXT_MODEL_IDS = new Set(['gpt-5.5', 'deepseek-chat', 'deepseek-reasoner'])
-const IMAGE_MODEL_IDS = new Set(['gpt-image-2', 'nanobanana', 'nanobanana-pro', 'nanobanana-2'])
+const IMAGE_MODEL_IDS = new Set([
+	'gpt-image-2',
+	'nanobanana',
+	'nanobanana-pro',
+	'nanobanana-2',
+	'seedream-v4.5',
+	'seedream-5.0-lite',
+])
 
-const ARK_DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'
-const DEFAULT_VIDEO_MODEL = 'doubao-seedance-2-0-260128'
-const VIDEO_MODEL_IDS = new Set(['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128'])
-const VIDEO_RESOLUTIONS = new Set(['480p', '720p', '1080p'])
+const DEFAULT_VIDEO_MODEL = 'seedance-2.0-t2v'
+const VIDEO_MODEL_IDS = new Set([
+	'seedance-2.0-t2v',
+	'seedance-2.0-i2v',
+	'seedance-2.0-r2v',
+	'seedance-2.0-fast-t2v',
+	'seedance-2.0-fast-i2v',
+	'seedance-2.0-fast-r2v',
+	'veo3-1-fast',
+	'veo3-1-fast-4k',
+	'veo3-1-fast-ref',
+	'veo3-1-quality',
+	'veo3-1-quality-4k',
+	'grok-imagine-t2v',
+	'grok-imagine-i2v',
+	'grok-imagine-1.5-preview',
+	'gemini-omni-t2v',
+	'gemini-omni-i2v',
+	'gemini-omni-r2v',
+	'sora-2-vip',
+])
+const VIDEO_RESOLUTIONS = new Set(['480p', '720p'])
 const VIDEO_RATIOS = new Set(['adaptive', '16:9', '9:16', '1:1', '4:3', '3:4', '21:9'])
 const VIDEO_IMAGE_ROLES = new Set(['first_frame', 'last_frame', 'reference_image'])
+const APIPOD_IMAGE_POLL_INTERVAL_MS = 5000
+const APIPOD_IMAGE_POLL_TIMEOUT_MS = 300_000
+const videoTaskCosUrls = new Map<string, string>()
 
 // eslint-disable-next-line no-console
 console.log('build env:', env)
@@ -255,11 +286,12 @@ function aiStudioApiPlugin(): Plugin {
 				}
 
 				sendJson(res, 200, {
-					provider: 'OpenAI-compatible',
+					provider: 'APIPod',
 					configured: Boolean(getAiApiKey()),
 					baseUrl: getAiBaseUrl(),
 					imageApiUrl: getImageApiUrl(),
-					arkConfigured: Boolean(getArkApiKey()),
+					arkConfigured: Boolean(getAiApiKey()),
+					cosConfigured: isCosConfigured(),
 				})
 			})
 
@@ -274,7 +306,7 @@ function aiStudioApiPlugin(): Plugin {
 					if (!authHeader) {
 						sendJson(res, 503, {
 							error:
-								'Image API key is not configured. Open the canvas interface settings and enter your API key.',
+								'APIPod API key is not configured. Open the canvas interface settings and enter your API key.',
 						})
 						return
 					}
@@ -313,7 +345,7 @@ function aiStudioApiPlugin(): Plugin {
 
 					saveAiSettings(nextApiKey, normalizedBaseUrl)
 					sendJson(res, 200, {
-						provider: 'OpenAI-compatible',
+						provider: 'APIPod',
 						configured: true,
 						baseUrl: getAiBaseUrl(),
 					})
@@ -337,11 +369,11 @@ function aiStudioApiPlugin(): Plugin {
 					const normalizedArkBaseUrl = normalizeAiBaseUrl(arkBaseUrl)
 
 					if (!nextArkApiKey || !isValidAiApiKey(nextArkApiKey)) {
-						sendJson(res, 400, { error: '请输入有效的火山引擎 ARK API Key。' })
+						sendJson(res, 400, { error: '请输入有效的 APIPod API Key。' })
 						return
 					}
 					if (arkBaseUrl && !normalizedArkBaseUrl) {
-						sendJson(res, 400, { error: '请输入有效的火山方舟接口地址。' })
+						sendJson(res, 400, { error: '请输入有效的 APIPod 接口地址。' })
 						return
 					}
 
@@ -363,7 +395,14 @@ function aiStudioApiPlugin(): Plugin {
 					if (!authHeader) {
 						sendJson(res, 503, {
 							error:
-								'Image API key is not configured. Open the canvas interface settings and enter your API key.',
+								'APIPod API key is not configured. Open the canvas interface settings and enter your API key.',
+						})
+						return
+					}
+					const missingCosFields = getMissingCosConfigFields()
+					if (missingCosFields.length) {
+						sendJson(res, 503, {
+							error: `腾讯云 COS 未配置完整，缺少：${missingCosFields.join(', ')}。`,
 						})
 						return
 					}
@@ -442,7 +481,7 @@ function aiStudioApiPlugin(): Plugin {
 					if (!authHeader) {
 						sendJson(res, 503, {
 							error:
-								'Image API key is not configured. Open the canvas interface settings and enter your API key.',
+								'APIPod API key is not configured. Open the canvas interface settings and enter your API key.',
 						})
 						return
 					}
@@ -533,7 +572,7 @@ function aiStudioApiPlugin(): Plugin {
 					if (!authHeader) {
 						sendJson(res, 503, {
 							error:
-								'Image API key is not configured. Open the canvas interface settings and enter your API key.',
+								'APIPod API key is not configured. Open the canvas interface settings and enter your API key.',
 						})
 						return
 					}
@@ -631,20 +670,28 @@ function aiStudioApiPlugin(): Plugin {
 				try {
 					const authHeader = getArkAuthorizationHeader()
 					if (!authHeader) {
-						sendJson(res, 503, { error: '火山引擎 ARK API Key 未配置，请在接口配置面板填写。' })
+						sendJson(res, 503, { error: 'APIPod API Key 未配置，请在接口配置面板填写。' })
+						return
+					}
+					const missingCosFields = getMissingCosConfigFields()
+					if (missingCosFields.length) {
+						sendJson(res, 503, {
+							error: `腾讯云 COS 未配置完整，缺少：${missingCosFields.join(', ')}。`,
+						})
 						return
 					}
 
 					const contentLength = Number(req.headers['content-length'] || 0)
 					if (contentLength > 64 * 1024 * 1024) {
 						sendJson(res, 413, {
-							error: '请求体超过 64MB 限制（火山方舟上限），请压缩参考图后重试。',
+							error: '请求体超过 64MB 限制，请压缩参考图后重试。',
 						})
 						return
 					}
 
 					const body = await readJsonBody(req)
 					const model = getString(body.model) || DEFAULT_VIDEO_MODEL
+					const mode = getString(body.mode)
 					const prompt = getString(body.prompt).trim()
 					const resolution = getString(body.resolution) || '720p'
 					const ratio = getString(body.ratio) || 'adaptive'
@@ -696,45 +743,43 @@ function aiStudioApiPlugin(): Plugin {
 						return
 					}
 
-					const content = [
-						{ type: 'text', text: prompt },
-						...images.map((image) => ({
-							type: 'image_url',
-							image_url: { url: image.url },
-							role: image.role,
-						})),
-					]
+					const imageUrls = await Promise.all(
+						images.map((image) => ensureCosMediaUrl(image.url, 'input-image'))
+					)
+					const apipodModel = selectApipodVideoModel(model, images, mode)
 					const response = await fetchWithTimeout(
-						`${getArkBaseUrl()}/contents/generations/tasks`,
+						getApipodEndpoint('videos/generations'),
 						{
 							method: 'POST',
 							headers: {
 								Authorization: authHeader,
 								'Content-Type': 'application/json',
 							},
-							body: JSON.stringify({
-								model,
-								content,
-								resolution,
-								ratio,
-								duration,
-								generate_audio: generateAudio,
-								watermark: false,
-							}),
+							body: JSON.stringify(
+								createApipodVideoPayload({
+									model: apipodModel,
+									prompt,
+									imageUrls,
+									resolution,
+									ratio,
+									duration,
+									generateAudio,
+								})
+							),
 						},
 						60_000
 					)
 					const responseText = await response.text()
 					const data = parseJsonSafely(responseText)
 					if (!response.ok) {
-						const message = getArkError(data) || `视频任务创建失败（HTTP ${response.status}）`
+						const message = getApipodError(data) || `视频任务创建失败（HTTP ${response.status}）`
 						console.error('[ai-studio-api] Video task creation failed:', message)
 						sendJson(res, response.status, { error: message })
 						return
 					}
-					const taskId = getString(data?.id)
+					const taskId = getApipodTaskId(data)
 					if (!taskId) {
-						sendJson(res, 502, { error: '火山方舟没有返回任务 ID。' })
+						sendJson(res, 502, { error: 'APIPod 没有返回任务 ID。' })
 						return
 					}
 					sendJson(res, 200, { taskId })
@@ -748,35 +793,19 @@ function aiStudioApiPlugin(): Plugin {
 			server.middlewares.use('/api/video-task', async (req, res) => {
 				const requestUrl = new URL(req.url || '/', 'http://localhost')
 				const taskId = (requestUrl.searchParams.get('id') || '').trim()
-				if (!/^cgt-[A-Za-z0-9-]+$/.test(taskId)) {
+				if (!/^[A-Za-z0-9._:-]{3,160}$/.test(taskId)) {
 					sendJson(res, 400, { error: '任务 ID 无效。' })
 					return
 				}
 				const authHeader = getArkAuthorizationHeader()
 				if (!authHeader) {
-					sendJson(res, 503, { error: '火山引擎 ARK API Key 未配置，请在接口配置面板填写。' })
+					sendJson(res, 503, { error: 'APIPod API Key 未配置，请在接口配置面板填写。' })
 					return
 				}
 
 				if (req.method === 'DELETE') {
-					try {
-						const response = await fetchWithTimeout(
-							`${getArkBaseUrl()}/contents/generations/tasks/${taskId}`,
-							{ method: 'DELETE', headers: { Authorization: authHeader } },
-							30_000
-						)
-						const responseText = await response.text()
-						if (!response.ok) {
-							const message =
-								getArkError(parseJsonSafely(responseText)) ||
-								`取消任务失败（HTTP ${response.status}）`
-							sendJson(res, response.status, { error: message })
-							return
-						}
-						sendJson(res, 200, { status: 'cancelled' })
-					} catch (err) {
-						sendJson(res, 500, { error: getErrorMessage(err) })
-					}
+					videoTaskCosUrls.delete(taskId)
+					sendJson(res, 200, { status: 'cancelled' })
 					return
 				}
 
@@ -786,48 +815,51 @@ function aiStudioApiPlugin(): Plugin {
 				}
 
 				try {
-					const localVideoPath = getVideoCachePath(`${taskId}.mp4`)
-					if (existsSync(localVideoPath)) {
-						sendJson(res, 200, { status: 'succeeded', videoUrl: `/api/video-file/${taskId}.mp4` })
+					const cachedCosUrl = videoTaskCosUrls.get(taskId)
+					if (cachedCosUrl) {
+						sendJson(res, 200, { status: 'succeeded', videoUrl: cachedCosUrl })
 						return
 					}
 
 					const response = await fetchWithTimeout(
-						`${getArkBaseUrl()}/contents/generations/tasks/${taskId}`,
+						`${getApipodEndpoint('videos/status')}/${encodeURIComponent(taskId)}`,
 						{ method: 'GET', headers: { Authorization: authHeader } },
 						30_000
 					)
 					const responseText = await response.text()
 					const data = parseJsonSafely(responseText)
 					if (!response.ok) {
-						const message = getArkError(data) || `查询任务失败（HTTP ${response.status}）`
+						const message = getApipodError(data) || `查询任务失败（HTTP ${response.status}）`
 						sendJson(res, response.status, { error: message })
 						return
 					}
 
-					const status = getString(data?.status)
+					const status = normalizeApipodTaskStatus(getApipodTaskStatus(data))
 					if (status !== 'succeeded') {
 						sendJson(res, 200, {
 							status: status || 'running',
-							error: data?.error ? getArkError(data) : '',
+							error: getApipodError(data),
 						})
 						return
 					}
 
-					const remoteVideoUrl = getString(data?.content?.video_url)
+					const remoteVideoUrl = extractApipodTaskResultUrls(data, 'video')[0]
 					if (!remoteVideoUrl) {
 						sendJson(res, 502, { error: '任务成功但没有返回视频地址。' })
 						return
 					}
 					try {
-						await downloadVideoToCache(remoteVideoUrl, localVideoPath)
-						sendJson(res, 200, { status: 'succeeded', videoUrl: `/api/video-file/${taskId}.mp4` })
+						const videoUrl = await uploadMediaToCos(remoteVideoUrl, {
+							kind: 'video',
+							taskId,
+							preferredExtension: 'mp4',
+						})
+						videoTaskCosUrls.set(taskId, videoUrl)
+						sendJson(res, 200, { status: 'succeeded', videoUrl })
 					} catch (err) {
-						console.error('[ai-studio-api] Video download failed:', getErrorMessage(err))
-						sendJson(res, 200, {
-							status: 'succeeded',
-							videoUrl: remoteVideoUrl,
-							warning: '视频转存本地失败，当前链接 24 小时后过期，请及时下载。',
+						console.error('[ai-studio-api] Video COS upload failed:', getErrorMessage(err))
+						sendJson(res, 500, {
+							error: `视频上传腾讯云 COS 失败：${getErrorMessage(err)}`,
 						})
 					}
 				} catch (err) {
@@ -1151,6 +1183,7 @@ function clearAuthCookie(res: { setHeader(name: string, value: string): void }) 
 
 function getAiApiKey() {
 	return (
+		process.env.APIPOD_API_KEY ||
 		process.env.IMAGE_API_KEY ||
 		process.env.IMAGE_GATEWAY_API_KEY ||
 		process.env.API_KEY ||
@@ -1170,7 +1203,10 @@ function getAiBaseUrl() {
 
 function getImageGatewayBaseUrl() {
 	return normalizeAiBaseUrl(
-		process.env.IMAGE_GATEWAY_BASE_URL || process.env.API_BASE_URL || process.env.OPENAI_BASE_URL
+		process.env.APIPOD_BASE_URL ||
+			process.env.IMAGE_GATEWAY_BASE_URL ||
+			process.env.API_BASE_URL ||
+			process.env.OPENAI_BASE_URL
 	)
 }
 
@@ -1216,6 +1252,10 @@ function getAiEndpoint(pathname: string) {
 	return `${versionedBaseUrl}/${pathname.replace(/^\/?(v1\/)?/, '')}`
 }
 
+function getApipodEndpoint(pathname: string) {
+	return getAiEndpoint(pathname)
+}
+
 function getImageGenerationEndpoint() {
 	return getImageApiUrl() || getAiEndpoint('images/generations')
 }
@@ -1231,38 +1271,43 @@ function saveAiSettings(apiKey: string, baseUrl: string) {
 	let foundApiKey = false
 	let foundBaseUrl = false
 	const nextLines = lines.flatMap((line) => {
-		if (/^(IMAGE_API_KEY|IMAGE_GATEWAY_API_KEY|API_KEY|OPENAI_API_KEY)=/.test(line)) {
+		if (line.startsWith('APIPOD_API_KEY=')) {
 			foundApiKey = true
-			return line.startsWith('IMAGE_API_KEY=') ? [`IMAGE_API_KEY=${apiKey}`] : []
+			return [`APIPOD_API_KEY=${apiKey}`]
+		}
+		if (/^(IMAGE_API_KEY|IMAGE_GATEWAY_API_KEY|API_KEY|OPENAI_API_KEY)=/.test(line)) {
+			return []
+		}
+		if (line.startsWith('APIPOD_BASE_URL=')) {
+			foundBaseUrl = true
+			return baseUrl ? [`APIPOD_BASE_URL=${baseUrl}`] : []
 		}
 		if (/^(IMAGE_GATEWAY_BASE_URL|API_BASE_URL|OPENAI_BASE_URL)=/.test(line)) {
-			foundBaseUrl = true
-			return line.startsWith('IMAGE_GATEWAY_BASE_URL=') && baseUrl
-				? [`IMAGE_GATEWAY_BASE_URL=${baseUrl}`]
-				: []
+			return []
 		}
 		return [line]
 	})
 
-	if (!foundApiKey) nextLines.push(`IMAGE_API_KEY=${apiKey}`)
-	if (baseUrl && !foundBaseUrl) nextLines.push(`IMAGE_GATEWAY_BASE_URL=${baseUrl}`)
+	if (!foundApiKey) nextLines.push(`APIPOD_API_KEY=${apiKey}`)
+	if (baseUrl && !foundBaseUrl) nextLines.push(`APIPOD_BASE_URL=${baseUrl}`)
 	writeFileSync(
 		envPath,
 		`${nextLines.filter((line, index) => line || index < nextLines.length - 1).join('\n')}\n`
 	)
-	process.env.IMAGE_API_KEY = apiKey
+	process.env.APIPOD_API_KEY = apiKey
+	delete process.env.IMAGE_API_KEY
 	delete process.env.IMAGE_GATEWAY_API_KEY
 	delete process.env.API_KEY
 	delete process.env.OPENAI_API_KEY
 	if (baseUrl) {
-		process.env.IMAGE_GATEWAY_BASE_URL = baseUrl
+		process.env.APIPOD_BASE_URL = baseUrl
 	} else {
-		delete process.env.IMAGE_GATEWAY_BASE_URL
+		delete process.env.APIPOD_BASE_URL
 	}
 }
 
 function getArkApiKey() {
-	return process.env.ARK_API_KEY
+	return getAiApiKey() || process.env.ARK_API_KEY
 }
 
 function getArkAuthorizationHeader() {
@@ -1272,7 +1317,10 @@ function getArkAuthorizationHeader() {
 }
 
 function getArkBaseUrl() {
-	return normalizeAiBaseUrl(process.env.ARK_BASE_URL) || ARK_DEFAULT_BASE_URL
+	return (
+		normalizeAiBaseUrl(process.env.APIPOD_BASE_URL || process.env.ARK_BASE_URL) ||
+		DEFAULT_AI_BASE_URL
+	)
 }
 
 function saveArkSettings(apiKey: string, baseUrl: string) {
@@ -1281,27 +1329,34 @@ function saveArkSettings(apiKey: string, baseUrl: string) {
 	let foundApiKey = false
 	let foundBaseUrl = false
 	const nextLines = lines.flatMap((line) => {
-		if (line.startsWith('ARK_API_KEY=')) {
+		if (line.startsWith('APIPOD_API_KEY=')) {
 			foundApiKey = true
-			return [`ARK_API_KEY=${apiKey}`]
+			return [`APIPOD_API_KEY=${apiKey}`]
+		}
+		if (line.startsWith('ARK_API_KEY=')) {
+			return []
+		}
+		if (line.startsWith('APIPOD_BASE_URL=')) {
+			foundBaseUrl = true
+			return baseUrl ? [`APIPOD_BASE_URL=${baseUrl}`] : []
 		}
 		if (line.startsWith('ARK_BASE_URL=')) {
-			foundBaseUrl = true
-			return baseUrl ? [`ARK_BASE_URL=${baseUrl}`] : []
+			return []
 		}
 		return [line]
 	})
-	if (!foundApiKey) nextLines.push(`ARK_API_KEY=${apiKey}`)
-	if (baseUrl && !foundBaseUrl) nextLines.push(`ARK_BASE_URL=${baseUrl}`)
+	if (!foundApiKey) nextLines.push(`APIPOD_API_KEY=${apiKey}`)
+	if (baseUrl && !foundBaseUrl) nextLines.push(`APIPOD_BASE_URL=${baseUrl}`)
 	writeFileSync(
 		envPath,
 		`${nextLines.filter((line, index) => line || index < nextLines.length - 1).join('\n')}\n`
 	)
-	process.env.ARK_API_KEY = apiKey
+	process.env.APIPOD_API_KEY = apiKey
+	delete process.env.ARK_API_KEY
 	if (baseUrl) {
-		process.env.ARK_BASE_URL = baseUrl
+		process.env.APIPOD_BASE_URL = baseUrl
 	} else {
-		delete process.env.ARK_BASE_URL
+		delete process.env.APIPOD_BASE_URL
 	}
 }
 
@@ -1325,11 +1380,373 @@ function normalizeVideoImageInput(value: unknown): { url: string; role: string }
 	return { url, role }
 }
 
+function selectApipodVideoModel(
+	model: string,
+	images: Array<{ url: string; role: string }>,
+	mode: string
+) {
+	if (model.startsWith('seedance-2.0')) {
+		const fastPrefix = model.includes('-fast-') ? 'seedance-2.0-fast' : 'seedance-2.0'
+		if (!images.length) return `${fastPrefix}-t2v`
+		if (mode === 'reference' || images.some((image) => image.role === 'reference_image')) {
+			return `${fastPrefix}-r2v`
+		}
+		return `${fastPrefix}-i2v`
+	}
+	if (model === 'grok-imagine-t2v' && images.length) return 'grok-imagine-i2v'
+	if (model === 'gemini-omni-t2v' && images.length) return 'gemini-omni-i2v'
+	return model
+}
+
+function createApipodVideoPayload({
+	model,
+	prompt,
+	imageUrls,
+	resolution,
+	ratio,
+	duration,
+	generateAudio,
+}: {
+	model: string
+	prompt: string
+	imageUrls: string[]
+	resolution: string
+	ratio: string
+	duration: number
+	generateAudio: boolean
+}) {
+	const aspectRatio = normalizeApipodVideoAspectRatio(model, ratio)
+	const payload: Record<string, unknown> = {
+		model,
+		prompt,
+		aspect_ratio: aspectRatio,
+	}
+
+	if (imageUrls.length) payload.image_urls = imageUrls.slice(0, getVideoImageLimit(model))
+
+	if (model.startsWith('seedance-2.0')) {
+		payload.duration = duration === -1 ? 5 : duration
+		payload.resolution = VIDEO_RESOLUTIONS.has(resolution) ? resolution : '720p'
+		payload.generate_audio = generateAudio
+		payload.return_last_frame = false
+		payload.watermark = false
+		payload.web_search = false
+		return payload
+	}
+
+	if (model.startsWith('grok-imagine')) {
+		payload.duration = Math.min(30, Math.max(6, duration === -1 ? 10 : duration))
+		payload.resolution = VIDEO_RESOLUTIONS.has(resolution) ? resolution : '720p'
+		return payload
+	}
+
+	if (model.startsWith('gemini-omni') || model === 'sora-2-vip') {
+		payload.duration = duration === -1 ? 8 : duration
+		payload.resolution = VIDEO_RESOLUTIONS.has(resolution) ? resolution : '720p'
+		return payload
+	}
+
+	return payload
+}
+
+function normalizeApipodVideoAspectRatio(model: string, ratio: string) {
+	if (model.startsWith('veo')) {
+		return ratio === '9:16' ? '9:16' : '16:9'
+	}
+	if (model.startsWith('grok-imagine')) {
+		if (ratio === '1:1' || ratio === '2:3' || ratio === '3:2' || ratio === '9:16') return ratio
+		return '16:9'
+	}
+	return VIDEO_RATIOS.has(ratio) ? ratio : 'adaptive'
+}
+
+function getVideoImageLimit(model: string) {
+	if (model.startsWith('veo')) return 2
+	if (model.includes('-i2v')) return 2
+	return 9
+}
+
 function parseJsonSafely(value: string): any {
 	try {
 		return JSON.parse(value)
 	} catch {
 		return null
+	}
+}
+
+function getApipodError(data: any): string {
+	const error = data?.error || data?.data?.error
+	if (typeof error === 'string') return error
+	if (error) {
+		const code = getString(error.code)
+		const message = getString(error.message)
+		return [code, message].filter(Boolean).join(': ')
+	}
+	return getString(data?.message || data?.msg || data?.data?.message)
+}
+
+function getApipodTaskPayload(data: any) {
+	return data?.data && typeof data.data === 'object' ? data.data : data
+}
+
+function getApipodTaskId(data: any) {
+	const payload = getApipodTaskPayload(data)
+	return getString(payload?.task_id || payload?.taskId || payload?.id || data?.task_id || data?.id)
+}
+
+function getApipodTaskStatus(data: any) {
+	const payload = getApipodTaskPayload(data)
+	return getString(payload?.status || data?.status)
+}
+
+function normalizeApipodTaskStatus(status: string) {
+	if (status === 'completed' || status === 'succeeded' || status === 'success') return 'succeeded'
+	if (status === 'pending' || status === 'queued') return 'queued'
+	if (status === 'processing' || status === 'running') return 'running'
+	if (status === 'failed' || status === 'cancelled' || status === 'expired') return status
+	return status || 'running'
+}
+
+function extractApipodTaskResultUrls(data: any, kind: 'image' | 'video') {
+	const payload = getApipodTaskPayload(data)
+	const result =
+		payload?.result ?? payload?.results ?? payload?.output ?? payload?.content ?? data?.result
+	return uniqueStrings(collectMediaUrls(result, kind))
+}
+
+function collectMediaUrls(value: unknown, kind: 'image' | 'video'): string[] {
+	if (!value) return []
+	if (typeof value === 'string') {
+		if (value.startsWith('data:')) return [value]
+		const urls = value.match(/https?:\/\/[^\s"',)\\]+/g) || []
+		return urls.filter((url) => isLikelyMediaUrl(url, kind))
+	}
+	if (Array.isArray(value)) return value.flatMap((item) => collectMediaUrls(item, kind))
+	if (typeof value !== 'object') return []
+
+	const item = value as Record<string, unknown>
+	const directKeys =
+		kind === 'image'
+			? ['url', 'image_url', 'imageUrl', 'image', 'output_url', 'outputUrl']
+			: ['url', 'video_url', 'videoUrl', 'video', 'output_url', 'outputUrl']
+	const direct = directKeys.flatMap((key) => collectMediaUrls(item[key], kind))
+	if (direct.length) return direct
+
+	return Object.values(item).flatMap((nested) => collectMediaUrls(nested, kind))
+}
+
+function isLikelyMediaUrl(url: string, kind: 'image' | 'video') {
+	const lower = url.toLowerCase().split('?')[0]
+	if (kind === 'image')
+		return /\.(png|jpe?g|webp|gif|avif)$/.test(lower) || !/\.(mp4|webm|mov)$/.test(lower)
+	return /\.(mp4|webm|mov|m4v)$/.test(lower) || !/\.(png|jpe?g|webp|gif|avif)$/.test(lower)
+}
+
+function getCosConfig() {
+	const secretId =
+		process.env.COS_SECRET_ID || process.env.TENCENT_COS_SECRET_ID || process.env.TENCENT_SECRET_ID
+	const secretKey =
+		process.env.COS_SECRET_KEY ||
+		process.env.TENCENT_COS_SECRET_KEY ||
+		process.env.TENCENT_SECRET_KEY
+	const bucket = process.env.COS_BUCKET || process.env.TENCENT_COS_BUCKET
+	const region = process.env.COS_REGION || process.env.TENCENT_COS_REGION
+	const publicBaseUrl = process.env.COS_PUBLIC_BASE_URL || process.env.TENCENT_COS_PUBLIC_BASE_URL
+	const keyPrefix = process.env.COS_KEY_PREFIX || process.env.TENCENT_COS_KEY_PREFIX || 'ai-canvas'
+	return {
+		secretId: secretId?.trim() || '',
+		secretKey: secretKey?.trim() || '',
+		bucket: bucket?.trim() || '',
+		region: region?.trim() || '',
+		publicBaseUrl: publicBaseUrl?.trim() || '',
+		keyPrefix: keyPrefix.trim().replace(/^\/+|\/+$/g, ''),
+	}
+}
+
+function getMissingCosConfigFields() {
+	const config = getCosConfig()
+	return [
+		config.secretId ? '' : 'COS_SECRET_ID',
+		config.secretKey ? '' : 'COS_SECRET_KEY',
+		config.bucket ? '' : 'COS_BUCKET',
+		config.region ? '' : 'COS_REGION',
+	].filter(Boolean)
+}
+
+function isCosConfigured() {
+	return getMissingCosConfigFields().length === 0
+}
+
+let cosClient: any = null
+
+function getCosClient() {
+	if (cosClient) return cosClient
+	const config = getCosConfig()
+	const COS = require('cos-nodejs-sdk-v5')
+	cosClient = new COS({
+		SecretId: config.secretId,
+		SecretKey: config.secretKey,
+	})
+	return cosClient
+}
+
+async function ensureCosMediaUrl(sourceUrl: string, kind: 'input-image' | 'image' | 'video') {
+	if (sourceUrl.startsWith('http://') || sourceUrl.startsWith('https://')) return sourceUrl
+	return uploadMediaToCos(sourceUrl, {
+		kind,
+		preferredExtension: kind === 'video' ? 'mp4' : 'png',
+	})
+}
+
+async function uploadMediaToCos(
+	sourceUrl: string,
+	options: {
+		kind: 'input-image' | 'image' | 'video'
+		taskId?: string
+		preferredExtension?: string
+	}
+) {
+	const missing = getMissingCosConfigFields()
+	if (missing.length) throw new Error(`腾讯云 COS 未配置完整，缺少：${missing.join(', ')}`)
+
+	const media = await readMediaSource(sourceUrl, options.preferredExtension)
+	const key = createCosObjectKey({
+		kind: options.kind,
+		taskId: options.taskId,
+		contentType: media.contentType,
+		sourceUrl,
+		preferredExtension: options.preferredExtension,
+	})
+	const config = getCosConfig()
+	await putCosObject({
+		Bucket: config.bucket,
+		Region: config.region,
+		Key: key,
+		Body: media.buffer,
+		ContentType: media.contentType,
+	})
+	return createCosPublicUrl(key)
+}
+
+async function readMediaSource(sourceUrl: string, preferredExtension?: string) {
+	if (sourceUrl.startsWith('data:')) {
+		const match = sourceUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/)
+		if (!match) throw new Error('媒体 data URL 无效。')
+		const contentType =
+			match[1] || inferContentTypeFromExtension(preferredExtension || '') || 'image/png'
+		const payload = match[3] || ''
+		const buffer = match[2]
+			? Buffer.from(payload, 'base64')
+			: Buffer.from(decodeURIComponent(payload), 'utf8')
+		return { buffer, contentType }
+	}
+
+	const response = await fetchWithTimeout(sourceUrl, { method: 'GET' }, 300_000)
+	if (!response.ok) throw new Error(`媒体下载失败（HTTP ${response.status}）`)
+	const contentType =
+		response.headers.get('content-type')?.split(';')[0]?.trim() ||
+		inferContentTypeFromUrl(sourceUrl) ||
+		inferContentTypeFromExtension(preferredExtension || '') ||
+		'application/octet-stream'
+	const buffer = Buffer.from(await response.arrayBuffer())
+	if (!buffer.length) throw new Error('媒体内容为空。')
+	return { buffer, contentType }
+}
+
+function createCosObjectKey({
+	kind,
+	taskId,
+	contentType,
+	sourceUrl,
+	preferredExtension,
+}: {
+	kind: 'input-image' | 'image' | 'video'
+	taskId?: string
+	contentType: string
+	sourceUrl: string
+	preferredExtension?: string
+}) {
+	const config = getCosConfig()
+	const now = new Date()
+	const datePath = [
+		String(now.getUTCFullYear()),
+		String(now.getUTCMonth() + 1).padStart(2, '0'),
+		String(now.getUTCDate()).padStart(2, '0'),
+	].join('/')
+	const ext =
+		inferExtensionFromContentType(contentType) ||
+		inferExtensionFromUrl(sourceUrl) ||
+		preferredExtension ||
+		'bin'
+	const safeTaskId = taskId
+		? taskId.replace(/[^A-Za-z0-9._-]/g, '-')
+		: randomBytes(8).toString('hex')
+	const suffix = randomBytes(4).toString('hex')
+	return [config.keyPrefix, kind, datePath, `${safeTaskId}-${suffix}.${ext}`]
+		.filter(Boolean)
+		.join('/')
+}
+
+function createCosPublicUrl(key: string) {
+	const config = getCosConfig()
+	const encodedKey = key.split('/').map(encodeURIComponent).join('/')
+	if (config.publicBaseUrl) return `${config.publicBaseUrl.replace(/\/+$/, '')}/${encodedKey}`
+	return `https://${config.bucket}.cos.${config.region}.myqcloud.com/${encodedKey}`
+}
+
+function putCosObject(options: {
+	Bucket: string
+	Region: string
+	Key: string
+	Body: Buffer
+	ContentType: string
+}) {
+	return new Promise<void>((resolve, reject) => {
+		getCosClient().putObject(options, (err: Error | null) => {
+			if (err) reject(err)
+			else resolve()
+		})
+	})
+}
+
+function inferContentTypeFromUrl(url: string) {
+	return inferContentTypeFromExtension(inferExtensionFromUrl(url))
+}
+
+function inferContentTypeFromExtension(extension: string) {
+	const ext = extension.replace(/^\./, '').toLowerCase()
+	if (ext === 'png') return 'image/png'
+	if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+	if (ext === 'webp') return 'image/webp'
+	if (ext === 'gif') return 'image/gif'
+	if (ext === 'avif') return 'image/avif'
+	if (ext === 'mp4' || ext === 'm4v') return 'video/mp4'
+	if (ext === 'webm') return 'video/webm'
+	if (ext === 'mov') return 'video/quicktime'
+	return ''
+}
+
+function inferExtensionFromContentType(contentType: string) {
+	const type = contentType.toLowerCase()
+	if (type.includes('image/png')) return 'png'
+	if (type.includes('image/jpeg')) return 'jpg'
+	if (type.includes('image/webp')) return 'webp'
+	if (type.includes('image/gif')) return 'gif'
+	if (type.includes('image/avif')) return 'avif'
+	if (type.includes('video/mp4')) return 'mp4'
+	if (type.includes('video/webm')) return 'webm'
+	if (type.includes('video/quicktime')) return 'mov'
+	return ''
+}
+
+function inferExtensionFromUrl(url: string) {
+	try {
+		const pathname = new URL(url).pathname
+		const ext = path.extname(pathname).replace(/^\./, '').toLowerCase()
+		return /^[a-z0-9]+$/.test(ext) ? ext : ''
+	} catch {
+		const ext = path.extname(url.split('?')[0]).replace(/^\./, '').toLowerCase()
+		return /^[a-z0-9]+$/.test(ext) ? ext : ''
 	}
 }
 
@@ -1483,7 +1900,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 180_
 		return await fetch(url, { ...init, signal: controller.signal })
 	} catch (err) {
 		if (err instanceof Error && err.name === 'AbortError') {
-			throw new Error(`Image API request timed out after ${Math.round(timeoutMs / 1000)} seconds.`)
+			throw new Error(`API request timed out after ${Math.round(timeoutMs / 1000)} seconds.`)
 		}
 		throw err
 	} finally {
@@ -1567,24 +1984,125 @@ async function generateSingleImageFromText({
 	prompt: string
 	size: string
 }) {
+	return generateApipodImage({
+		authHeader,
+		model,
+		prompt,
+		size,
+		sourceImageUrls: [],
+	})
+}
+
+async function generateApipodImage({
+	authHeader,
+	model,
+	prompt,
+	size,
+	sourceImageUrls,
+}: {
+	authHeader: string
+	model: string
+	prompt: string
+	size: string
+	sourceImageUrls: string[]
+}) {
+	const payload: Record<string, unknown> = {
+		model,
+		prompt,
+		aspect_ratio: aspectRatioFromImageSize(size),
+		quality: imageQualityFromSize(size),
+	}
+	if (sourceImageUrls.length) payload.image_urls = sourceImageUrls
+
 	const response = await fetchWithTimeout(getImageGenerationEndpoint(), {
 		method: 'POST',
 		headers: {
 			Authorization: authHeader,
 			'Content-Type': 'application/json',
 		},
-		body: JSON.stringify({
-			model,
-			prompt,
-			n: 1,
-			size,
-		}),
+		body: JSON.stringify(payload),
 	})
-	const data = await response.json()
+	const responseText = await response.text()
+	const data = parseJsonSafely(responseText)
 	if (!response.ok) {
-		throw new Error(getAiError(data))
+		throw new Error(getApipodError(data) || `图片任务创建失败（HTTP ${response.status}）`)
 	}
-	return extractImageResponseUrls(data)
+
+	const immediateUrls = extractImageResponseUrls(data)
+	if (immediateUrls.length) {
+		return Promise.all(
+			immediateUrls.map((imageUrl) =>
+				uploadMediaToCos(imageUrl, { kind: 'image', preferredExtension: 'png' })
+			)
+		)
+	}
+
+	const taskId = getApipodTaskId(data)
+	if (!taskId) {
+		throw new Error('APIPod 没有返回图片任务 ID。')
+	}
+
+	const remoteImageUrls = await waitForApipodImageTask(authHeader, taskId)
+	return Promise.all(
+		remoteImageUrls.map((imageUrl) =>
+			uploadMediaToCos(imageUrl, { kind: 'image', taskId, preferredExtension: 'png' })
+		)
+	)
+}
+
+async function waitForApipodImageTask(authHeader: string, taskId: string) {
+	const startedAt = Date.now()
+	while (Date.now() - startedAt < APIPOD_IMAGE_POLL_TIMEOUT_MS) {
+		await new Promise((resolve) => setTimeout(resolve, APIPOD_IMAGE_POLL_INTERVAL_MS))
+		const response = await fetchWithTimeout(
+			`${getApipodEndpoint('images/status')}/${encodeURIComponent(taskId)}`,
+			{ method: 'GET', headers: { Authorization: authHeader } },
+			30_000
+		)
+		const responseText = await response.text()
+		const data = parseJsonSafely(responseText)
+		if (!response.ok) {
+			throw new Error(getApipodError(data) || `查询图片任务失败（HTTP ${response.status}）`)
+		}
+
+		const status = normalizeApipodTaskStatus(getApipodTaskStatus(data))
+		if (status === 'succeeded') {
+			const imageUrls = extractApipodTaskResultUrls(data, 'image')
+			if (!imageUrls.length) throw new Error('图片任务成功但没有返回图片地址。')
+			return imageUrls
+		}
+		if (status === 'failed' || status === 'cancelled' || status === 'expired') {
+			throw new Error(
+				getApipodError(data) || `图片任务${status === 'failed' ? '失败' : '已结束'}。`
+			)
+		}
+	}
+	throw new Error('图片任务等待超时，请稍后重试。')
+}
+
+function aspectRatioFromImageSize(size: string) {
+	const match = size.match(/^(\d+)x(\d+)$/)
+	if (!match) return 'auto'
+	const width = Number(match[1])
+	const height = Number(match[2])
+	const ratio = width / height
+	const candidates = [
+		{ id: '1:1', value: 1 },
+		{ id: '3:4', value: 3 / 4 },
+		{ id: '4:3', value: 4 / 3 },
+		{ id: '16:9', value: 16 / 9 },
+		{ id: '9:16', value: 9 / 16 },
+	]
+	const closest = candidates.reduce((best, candidate) =>
+		Math.abs(candidate.value - ratio) < Math.abs(best.value - ratio) ? candidate : best
+	)
+	return closest.id
+}
+
+function imageQualityFromSize(size: string) {
+	const match = size.match(/^(\d+)x(\d+)$/)
+	if (!match) return '1K'
+	return Math.max(Number(match[1]), Number(match[2])) > 1200 ? '2K' : '1K'
 }
 
 async function generateImageFromImage({
@@ -1603,6 +2121,9 @@ async function generateImageFromImage({
 	sourceImageUrls: string[]
 }) {
 	const prompts = createStandaloneImagePrompts(prompt, count)
+	const remoteSourceImageUrls = await Promise.all(
+		sourceImageUrls.map((sourceImageUrl) => ensureCosMediaUrl(sourceImageUrl, 'input-image'))
+	)
 	const urls = await Promise.all(
 		prompts.map((standalonePrompt) =>
 			generateSingleImageFromImage({
@@ -1610,7 +2131,7 @@ async function generateImageFromImage({
 				model,
 				prompt: standalonePrompt,
 				size,
-				sourceImageUrls,
+				sourceImageUrls: remoteSourceImageUrls,
 			})
 		)
 	)
@@ -1630,31 +2151,7 @@ async function generateSingleImageFromImage({
 	size: string
 	sourceImageUrls: string[]
 }) {
-	if (isNanoBananaModel(model)) {
-		return generateNanoBananaImageEdit({ authHeader, model, prompt, sourceImageUrls })
-	}
-	try {
-		return await generateMultipartImageEdit({
-			authHeader,
-			model,
-			prompt,
-			size,
-			sourceImageUrls,
-			imageFieldName: 'image',
-		})
-	} catch (err) {
-		const message = getErrorMessage(err)
-		if (!message.toLowerCase().includes('image')) throw err
-		console.error('[ai-studio-api] Retrying image edit with image[] field:', message)
-		return generateMultipartImageEdit({
-			authHeader,
-			model,
-			prompt,
-			size,
-			sourceImageUrls,
-			imageFieldName: 'image[]',
-		})
-	}
+	return generateApipodImage({ authHeader, model, prompt, size, sourceImageUrls })
 }
 
 async function generateMultipartImageEdit({
@@ -1803,7 +2300,7 @@ function getAiError(data: unknown) {
 		).error
 		if (typeof error?.message === 'string') return error.message
 	}
-	return 'OpenAI-compatible API request failed.'
+	return 'APIPod-compatible API request failed.'
 }
 
 function getErrorMessage(err: unknown) {
@@ -1837,11 +2334,11 @@ function getAiErrorFromText(responseText: string) {
 
 	for (const chunk of parseSseDataLines(responseText)) {
 		const message = getAiError(chunk)
-		if (message !== 'OpenAI-compatible API request failed.') return message
+		if (message !== 'APIPod-compatible API request failed.') return message
 	}
 
 	const text = responseText.replace(/^data:\s*/gm, '').trim()
-	return text || 'OpenAI-compatible API request failed.'
+	return text || 'APIPod-compatible API request failed.'
 }
 
 function parseJsonMaybe(value: string) {
