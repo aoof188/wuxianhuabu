@@ -37,7 +37,7 @@ function spaFallbackPlugin(): Plugin {
 
 				// If this looks like a page request (no file extension),
 				// rewrite to index.html so sirv serves the SPA
-				if (!ext) {
+				if (!ext && !pathname.startsWith('/api/')) {
 					req.url = '/index.html' + (url.includes('?') ? url.substring(url.indexOf('?')) : '')
 				}
 				next()
@@ -175,7 +175,7 @@ export default defineConfig(({ mode }) => {
 })
 
 function aiStudioApiPlugin(): Plugin {
-	return {
+	const plugin: Plugin = {
 		name: 'ai-studio-api',
 		configureServer(server) {
 			server.middlewares.use('/api/auth/session', async (req, res) => {
@@ -924,6 +924,10 @@ function aiStudioApiPlugin(): Plugin {
 			})
 		},
 	}
+
+	plugin.configurePreviewServer = plugin.configureServer as any
+
+	return plugin
 }
 
 function exampleReadmePlugin(): PluginOption {
